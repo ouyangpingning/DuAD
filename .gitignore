@@ -1,3 +1,4 @@
+.claude/
 model_ckpt/
 outputs/
 __pycache__/
