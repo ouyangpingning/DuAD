@@ -1,6 +1,6 @@
 # DuAD — Dual-Branch Unsupervised Anomaly Detection with DINOv2
 
-基于冻结 DINOv2 特征 + 双分支 GAN 的无监督工业视觉异常检测，支持**全样本 SOTA** 与**少样本**场景。
+基于冻结 DINOv2 特征 + 双分支 GAN 的无监督工业视觉异常检测，支持**全样本** 与**少样本**场景。
 
 ## 目录
 
