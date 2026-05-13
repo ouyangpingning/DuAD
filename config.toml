@@ -1,0 +1,72 @@
+# MVTec AD Anomaly Detection — 统一参数配置
+# main.py 和 visualize_feature.py 共用此文件，修改一处全局生效。
+
+[architecture]
+target_size = 518 # 设置的输入图像尺寸，模型会自动调整输入图像大小以适应此尺寸，同时在评估时也会将测试图像调整到相同尺寸以保持一致性
+layer_indices = [2, 5, 8, 11] # 选择的 DINOv2 层索引，通常对应于不同层次的特征表示
+input_planes = 1536    # 384 * len(layer_indices) ， 这个是输入到投影器的特征维度，通常是dinov2输出的每层特征维度的总和
+hidden_dim = 1536 # 判别器的输入维度，通常设置为输入维度的相同大小以保持信息流畅
+
+[training]
+meta_epochs = 150 # 元训练的总轮数，通常需要较多轮数以充分训练模型
+gan_epochs = 4 # GAN 训练的轮数，通常较少，因为 GAN 训练较为复杂且容易过拟合
+batch_size = 8 # 每个批次的样本数量，较小的批次有助于稳定训练，但可能需要更多轮数
+dsc_margin = 1.0 # 判别器的 margin 参数，通常设置为 1.0 以平衡正负样本的距离
+proj_lr = 0.001        # 1e-3  # 投影器的学习率，通常设置为较大的值以加速收敛，但过大可能会导致不稳定
+dsc_lr = 0.0002        # 2e-4 # 判别器的学习率，通常设置为较小的值以稳定训练，但过小可能会导致收敛过慢
+use_scheduler = true # 是否使用学习率调度器，通常有助于训练稳定性和性能提升
+
+[noise]
+noise_std = 0.5 # 高斯噪声的标准差，较大的值会增加噪声强度，但过大可能会破坏特征信息
+use_noise_annealing = true # 是否使用噪声退火，通常有助于训练后期减少噪声强度以稳定模型性能
+noise_std_max = 0.5 # 噪声退火的初始标准差，通常设置为与 noise_std 相同的值以保持一致性
+noise_std_min = 0.2     # 噪声退火的最小标准差，较小的值有助于训练后期稳定模型，但过小可能会失去正则化效果
+noise_anneal_type = "cosine" # 噪声退火的类型，常见的有 "linear"（线性退火）和 "cosine"（余弦退火），余弦退火通常能提供更平滑的退火曲线
+
+[pca_mask]
+use_pca_mask = true # 是否使用 PCA 分支的掩码，通常有助于突出重要特征区域，但可能会增加计算复杂度
+pca_threshold = 10.0 # PCA 分支的阈值，较高的值会使掩码更严格，突出更显著的特征，但过高可能会丢失重要信息
+pca_border = 0.2 # PCA 分支掩码的边界扩展比例，较大的值会增加掩码的覆盖范围，但过大可能会引入噪声
+pca_kernel_size = 3 # PCA 分支掩码的平滑卷积核大小，较大的值会增加掩码的平滑程度，但过大可能会模糊特征边界
+pca_use_gpu = true # 是否在 PCA 分支中使用 GPU 加速，通常有助于加速计算，但需要确保环境支持 GPU
+skip_categories = ["cable", "carpet", "grid", "leather", "tile", "transistor", "wood"] # 在 PCA 分支中跳过的类别列表，通常是那些纹理复杂或特征不明显的类别，以避免引入噪声
+
+[perlin_mask]
+use_perlin_mask = true # 是否使用 Perlin 噪声分支的掩码，通常有助于增加模型的多样性和鲁棒性，但可能会增加计算复杂度
+perlin_min = 0 # perlin噪声的最小值决定噪声生成范围
+perlin_max = 4 # perlin噪声的最大值决定噪声生成范围
+perlin_branch_weight = 0.5 # Perlin 分支的权重，较高的值会增加 Perlin 分支在最终决策中的影响力，但过高可能会引入过多的噪声
+pca_branch_weight = 0.5 # PCA 分支的权重，较高的值会增加 PCA 分支在最终决策中的影响力，但过高可能会导致过拟合
+
+[augment]
+augment_categories = ["hazelnut", "screw"] # 类别特定的增强覆盖，通常选择旋转和翻转等几何增强适合的类别进行增强，以提高模型对几何变化的鲁棒性
+color_augment_categories = ["toothbrush"] # 类别特定的颜色增强覆盖，通常选择那些颜色特征较弱的类别进行颜色增强，以提高模型对颜色变化的鲁棒性
+
+# 类别特定的 PCA 阈值覆盖
+[category_pca.threshold]  # 为每个类别设置不同的 PCA 阈值，较高的值会使掩码更严格，突出更显著的特征，但过高可能会丢失重要信息
+bottle = 20.0 
+capsule = 60.0
+screw = 80.0
+metal_nut = 50.0
+pill = 15.0
+hazelnut = 30.0
+toothbrush = 30.0
+
+[category_pca.border] # 为每个类别设置不同的 PCA 边界扩展比例，较大的值会增加掩码的覆盖范围，但过大可能会引入噪声
+bottle = 0.25
+capsule = 0.3
+screw = 0.3
+metal_nut = 0.25
+pill = 0.2
+hazelnut = 0.25
+toothbrush = 0.2
+
+[paths]
+base_dir = "/root/siton-tmp/mvtec_anomaly_detection" # 数据集的根目录，通常包含所有类别的子目录，每个子目录包含训练和测试图像
+ckpt_dir = "./model_ckpt" # 模型检查点的保存目录，通常包含训练过程中保存的模型权重文件，以便后续加载和评估
+log_dir = "./model_log" # 日志文件的保存目录，通常包含训练过程中的日志文件，以便后续分析和调试
+dinov2_model_dir = "./facebookresearch_dinov2_main" # DINOv2 模型文件的目录，通常包含预训练的 DINOv2 模型权重文件，以便加载和使用
+output_dir = "./outputs" # 实验输出目录
+
+[misc]
+patch_size = 3 # 输入图像被划分成的补丁大小，较小的值会增加特征的细粒度，但过小可能会增加计算复杂度

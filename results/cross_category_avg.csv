@@ -1,0 +1,8 @@
+mode,metric,mean,std
+k4,Image AUROC,0.9814,0.0286
+k4,Image AP,0.9913,0.0145
+k4,Image F1,0.9725,0.0354
+k4,Pixel AUROC,0.9787,0.0177
+k4,Pixel AP,0.6689,0.1903
+k4,Pixel F1,0.6464,0.1470
+k4,Pixel PRO,0.9151,0.0522
