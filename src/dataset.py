@@ -181,7 +181,7 @@ def get_mvtec_dataloader(root_dir:str = "/run/media/lxb/Soft/repository/remote-r
     # 数据加载
     if k_shot is not None:
         # 少样本时使用带放回采样，保证每个 batch 都填满 batch_size
-        sampler = torch.utils.data.RandomSampler(MvTec_nomal, replacement=True, num_samples=len(MvTec_nomal) * 8) # 32个sample
+        sampler = torch.utils.data.RandomSampler(MvTec_nomal, replacement=True, num_samples=32)
         train_transform_dataloader = DataLoader(MvTec_nomal, batch_size=batch_size, sampler=sampler, num_workers=num_workers)
     else:
         train_transform_dataloader = DataLoader(MvTec_nomal, batch_size=batch_size, shuffle=True, num_workers=num_workers)
