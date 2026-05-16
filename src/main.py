@@ -105,10 +105,8 @@ def train_category(
     os.makedirs(cat_ckpt_dir, exist_ok=True)
     if k_shot is not None:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_best_ckpt.pth")
-        latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_latest_ckpt.pth")
     else:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_best_ckpt.pth")
-        latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_latest_ckpt.pth")
     
     # 最佳分数追踪
     best_score = {
@@ -146,9 +144,6 @@ def train_category(
                    f"Pixel AUROC: {current_score['pixel_auroc']:.4f}")
         
         # === 保存阶段 ===
-        # 保存最新模型
-        model.save(latest_ckpt_path, epoch=epoch, scores=current_score)
-        
         # 检查是否为最佳
         is_best = False
         if current_score['image_auroc'] > best_score['image_auroc']:
