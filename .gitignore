@@ -1,5 +1,6 @@
 .claude/
 model_ckpt/
+model_log/
 src/CLAUDE.md
 outputs/
 __pycache__/
