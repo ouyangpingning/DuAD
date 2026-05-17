@@ -133,7 +133,7 @@ def main(categories, k_shot, shot_seed):
 
         # 预测并可视化所有测试样本
         if os.path.exists(ckpt_path):
-            epoch, scores = detector.load(ckpt_path)
+            epoch, scores, _, _ = detector.load(ckpt_path)
             logger.info(f"Loaded checkpoint from epoch {epoch}, scores: {scores}")
         else:
             logger.warning(f"Checkpoint not found: {ckpt_path}")

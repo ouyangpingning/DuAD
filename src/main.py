@@ -105,8 +105,10 @@ def train_category(
     os.makedirs(cat_ckpt_dir, exist_ok=True)
     if k_shot is not None:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_best_ckpt.pth")
+        latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_latest_ckpt.pth")
     else:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_best_ckpt.pth")
+        latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_latest_ckpt.pth")
     
     # 最佳分数追踪
     best_score = {
@@ -119,9 +121,20 @@ def train_category(
         'pixel_pro': 0.0
     }
     best_epoch = -1
-    
-    # 训练循环1
-    for epoch in range(config.meta_epochs):
+
+    # 断点续训：如果存在 latest_ckpt 则恢复训练状态
+    start_epoch = 0
+    if os.path.exists(latest_ckpt_path):
+        logger.info(f"Found latest checkpoint, resuming from {latest_ckpt_path}")
+        _, _, saved_best_score, saved_best_epoch = model.load(latest_ckpt_path)
+        if saved_best_score:
+            best_score.update(saved_best_score)
+            best_epoch = saved_best_epoch
+            start_epoch = saved_best_epoch + 1
+        logger.info(f"Resume from epoch {start_epoch}, best_epoch={best_epoch}")
+
+    # 训练循环
+    for epoch in range(start_epoch, config.meta_epochs):
         logger.info(50 * "=" + f" Meta Epoch: {epoch}/{config.meta_epochs} " + 50 * "=")
         
         # === 训练阶段 ===
@@ -162,8 +175,16 @@ def train_category(
             logger.info(f"  Image AUROC: {best_score['image_auroc']:.4f}")
             logger.info(f"  Pixel AUROC: {best_score['pixel_auroc']:.4f}")
             logger.info('@' * 50)
-        
-    
+
+        # 每个 epoch 保存最新模型用于断点续训
+        model.save(latest_ckpt_path, epoch=epoch, scores=current_score,
+                   best_score=best_score, best_epoch=best_epoch)
+
+    # 训练完成，删除 latest_ckpt
+    if os.path.exists(latest_ckpt_path):
+        os.remove(latest_ckpt_path)
+        logger.info(f"Removed latest checkpoint: {latest_ckpt_path}")
+
     # === 最终完整评估（加载 best checkpoint 计算全部指标）===
     logger.info(f"\n{'='*60}")
     logger.info(f"Loading best checkpoint for full evaluation...")

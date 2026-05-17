@@ -1045,15 +1045,17 @@ class DINOv2AnomalyDetector:
         
         return self.predictor.predict(test_dataloader, aggregation)
     
-    def save(self, path: str, epoch: int = 0, scores: Tuple[float, float] = None):
+    def save(self, path: str, epoch: int = 0, scores: dict = None, best_score: dict = None, best_epoch: int = -1):
         """保存检查点"""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         state = {
             'config': vars(self.config),
             'epoch': epoch,
             'scores': scores,
+            'best_score': best_score,
+            'best_epoch': best_epoch,
             'trainer_state': self.trainer.get_state() if self.trainer else None
         }
         
@@ -1104,7 +1106,7 @@ class DINOv2AnomalyDetector:
             self.trainer.load_state(state['trainer_state'])
         
         self.logger.info(f"Checkpoint loaded from {path}")
-        return state.get('epoch', 0), state.get('scores')
+        return state.get('epoch', 0), state.get('scores'), state.get('best_score'), state.get('best_epoch', -1)
     
     def evaluate(
                 self,
