@@ -126,11 +126,11 @@ def train_category(
     start_epoch = 0
     if os.path.exists(latest_ckpt_path):
         logger.info(f"Found latest checkpoint, resuming from {latest_ckpt_path}")
-        _, _, saved_best_score, saved_best_epoch = model.load(latest_ckpt_path)
+        saved_epoch, _, saved_best_score, saved_best_epoch = model.load(latest_ckpt_path)
+        start_epoch = saved_epoch + 1
         if saved_best_score:
             best_score.update(saved_best_score)
             best_epoch = saved_best_epoch
-            start_epoch = saved_best_epoch + 1
         logger.info(f"Resume from epoch {start_epoch}, best_epoch={best_epoch}")
 
     # 训练循环
