@@ -27,18 +27,24 @@
 │   ├── bottle/
 │   ├── screw/
 │   └── ...
+├── model_onnx/                  # ONNX 导出模型（端到端推理）
+│   ├── bottle_k2_s0_full.onnx
+│   └── ...
 ├── model_log/                   # 训练日志（按类别分目录）
 │   ├── bottle/
 │   ├── screw/
 │   └── ...
 ├── outputs/                     # 可视化 / 实验输出
 ├── results/                     # 汇总 CSV 输出
+├── docs/
+│   └── ONNX_export_report.md    # ONNX 导出详细报告
 ├── scripts/
 │   └── aggregate_results.py     # 日志汇总统计脚本
 ├── facebookresearch_dinov2_main/  # DINOv2 本地源码（torch.hub 加载）
 └── src/
-    ├── main.py                  # 训练入口
+    ├── main.py                  # 训练入口（支持断点续训）
     ├── visualize_feature.py     # 可视化 / 推理入口
+    ├── export_onnx.py           # ONNX 模型导出（端到端）
     ├── myAD.py                  # 核心模型（ModelConfig / Trainer / Predictor / 组件）
     ├── dataset.py               # MVTec AD 数据加载器
     ├── utils.py                 # 评估指标、日志、特征聚合
@@ -56,6 +62,8 @@ pip install -r requirements.txt
 ```
 
 核心依赖：`torch>=2.0`, `scikit-learn`, `opencv-python`, `matplotlib`, `tomli`
+
+ONNX 推理（导出后）：`onnxruntime`（~10MB，无需 torch）
 
 ### 准备数据
 
@@ -148,6 +156,34 @@ python scripts/aggregate_results.py --csv               # CSV 格式输出
 - 多 `--shot_seed` 训练取平均降低采样方差
 - 检查点和日志均独立命名：`model_ckpt/{cat}/{cat}_k{K}_s{seed}_best_ckpt.pth`，`model_log/{cat}/{cat}_k{K}_s{seed}_full.log`
 - 全样本对应 `{cat}_best_ckpt.pth` / `{cat}_full.log`，互不覆盖
+
+### 6. ONNX 模型导出
+
+支持将训练好的模型导出为 ONNX 格式进行部署推理：
+
+```bash
+# 导出全样本模型
+python src/export_onnx.py --category bottle
+
+# 导出少样本模型并验证
+python src/export_onnx.py --category bottle --k_shot 2 --shot_seed 0 --verify
+```
+
+导出模型包含完整的端到端推理流程（DINOv2 → 特征聚合 → Projection → Discriminator → 后处理），仅需 `onnxruntime` 即可推理，不依赖 PyTorch 环境。
+
+详细说明见 [`docs/ONNX_export_report.md`](docs/ONNX_export_report.md)。
+
+### 7. 断点续训
+
+训练过程中如果服务器中断，重新运行相同命令即可从断点继续：
+
+```bash
+# 训练中断后，直接重新运行同一命令
+python src/main.py --categories "bottle screw" --k_shot 4 --shot_seed 0
+# 自动检测 latest_ckpt，恢复模型/优化器状态，从中断 epoch 继续
+```
+
+每个 epoch 结束后自动保存 `latest_ckpt`，训练正常完成后自动删除。断点续训无需额外参数。
 
 ## 训练流程
 
