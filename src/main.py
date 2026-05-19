@@ -131,6 +131,9 @@ def train_category(
         if saved_best_score:
             best_score.update(saved_best_score)
             best_epoch = saved_best_epoch
+        # 同步 Trainer 内部 epoch 计数器，确保日志与 main 循环的 epoch 一致
+        if model.trainer:
+            model.trainer.current_meta_epoch = saved_epoch
         logger.info(f"Resume from epoch {start_epoch}, best_epoch={best_epoch}")
 
     # 训练循环
