@@ -769,13 +769,14 @@ class Trainer:
         """获取训练状态"""
         return {
             'global_step': self.global_step,
+            'current_meta_epoch': self.current_meta_epoch,
             'proj_state': self.projection.state_dict(),
             'dsc_state': self.discriminator.state_dict(),
             'optimizer_proj': self.optimizer_proj.state_dict(),
             'optimizer_dsc': self.optimizer_dsc.state_dict(),
             'scheduler': self.scheduler.state_dict() if self.scheduler else None
         }
-    
+
     def load_state(self, state: Dict):
         """恢复训练状态"""
         self.projection.load_state_dict(state['proj_state'])
@@ -785,6 +786,7 @@ class Trainer:
         if self.scheduler and state.get('scheduler'):
             self.scheduler.load_state_dict(state['scheduler'])
         self.global_step = state['global_step']
+        self.current_meta_epoch = state.get('current_meta_epoch', 0)
 
 
 class Predictor:
