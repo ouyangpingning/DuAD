@@ -59,9 +59,9 @@ def train_category(
     enable_augment = False
     if k_shot is not None:
         if config.augment_categories is None:
-            enable_augment = True  # 未指定列表时，少样本下全部启用
-        else:
-            enable_augment = atype in config.augment_categories
+            enable_augment = True
+        elif atype in config.augment_categories:
+            enable_augment = True
     logger.info(f"Image augmentation: {enable_augment}")
 
     # 颜色数据增强（用于 toothbrush 等多颜色类别，解决少样本颜色偏差）
@@ -72,8 +72,8 @@ def train_category(
     logger.info(f"Color augmentation: {enable_color_augment}")
 
     train_transform, test_transform, gt_transform = get_transform(
-        size=config.target_size,  # 使用统一的 target_size
-        isize=config.target_size,  # 统一都有 target_size 参数，保持一致性
+        size=config.target_size,
+        isize=config.target_size,
         augment=enable_augment,
         color_augment=enable_color_augment,
     )

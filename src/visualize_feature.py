@@ -72,9 +72,12 @@ def main(categories, k_shot, shot_seed):
         perlin_max = config.perlin_max
 
         do_augment = (k_shot is not None) and (augment_categories is None or current_atype in augment_categories)
-        do_color_augment = (k_shot is not None) and (color_augment_categories is None or current_atype in color_augment_categories)
+        do_color_augment = (k_shot is not None) and (color_augment_categories is not None and current_atype in color_augment_categories)
 
-        train_transform, test_transform, gt_transform = get_transform(size=target_size, isize=target_size, augment=do_augment, color_augment=do_color_augment)
+        train_transform, test_transform, gt_transform = get_transform(
+            size=target_size, isize=target_size,
+            augment=do_augment, color_augment=do_color_augment,
+        )
         train_transform_dataloader, test_transform_dataloader = get_mvtec_dataloader(
             root_dir=base_dir,
             Atype=current_atype,

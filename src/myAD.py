@@ -42,7 +42,6 @@ class ModelConfig:
 
     # 数据增强控制
     augment_categories: List[str] = None  # 指定使用图像级数据增强的类别列表（少样本模式下生效）
-    flip_categories: List[str] = None  # 仅使用翻转增强的类别列表（少样本模式下生效），适用于 grid 等方向性强的纹理
 
     # 颜色数据增强控制（解决 toothbrush 等多颜色类别的少样本颜色偏差问题）
     color_augment_categories: List[str] = None  # 指定使用颜色增强的类别列表，如 ["toothbrush"]
@@ -865,17 +864,17 @@ class Predictor:
             patch_scores = -self.discriminator(projected)
             
             # 日志：打印推理时的特征统计
-            if self.logger:
-                self.logger.debug(
-                    f"[Predict] Projected shape={tuple(projected.shape)}, "
-                    f"min={projected.min().item():.4f}, max={projected.max().item():.4f}, "
-                    f"mean={projected.mean().item():.4f}, std={projected.std().item():.4f}"
-                )
-                self.logger.debug(
-                    f"[Predict] PatchScores min={patch_scores.min().item():.4f}, "
-                    f"max={patch_scores.max().item():.4f}, "
-                    f"mean={patch_scores.mean().item():.4f}, std={patch_scores.std().item():.4f}"
-                )
+            # if self.logger:
+            #     self.logger.debug(
+            #         f"[Predict] Projected shape={tuple(projected.shape)}, "
+            #         f"min={projected.min().item():.4f}, max={projected.max().item():.4f}, "
+            #         f"mean={projected.mean().item():.4f}, std={projected.std().item():.4f}"
+            #     )
+            #     self.logger.debug(
+            #         f"[Predict] PatchScores min={patch_scores.min().item():.4f}, "
+            #         f"max={patch_scores.max().item():.4f}, "
+            #         f"mean={patch_scores.mean().item():.4f}, std={patch_scores.std().item():.4f}"
+            #     )
             
             # 还原完整特征图（如果用了PCA）-- 因为背景部分的分数没有计算也就是丢掉了这部分patch，所以用最小分数填充
             if self.pca_generator and mask_tensor is not None:
