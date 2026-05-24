@@ -45,6 +45,7 @@ def main(categories, k_shot, shot_seed):
     ckpt_dir = paths["ckpt_dir"]
     log_dir = paths["log_dir"]
     output_dir = paths["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
     dinov2_model_dir = paths["dinov2_model_dir"]
 
     for current_atype in categories:
@@ -156,6 +157,7 @@ def main(categories, k_shot, shot_seed):
         # 可视化PCA掩模
         if config.use_pca_mask:
             logger.info("Generating PCA mask visualization...")
+            os.makedirs(f"{output_dir}/pca_mask/", exist_ok=True)
             # 从train dataloader获取第一张正常样本
             train_iter = iter(train_transform_dataloader)
             first_train_images, _, _, _ = next(train_iter)
@@ -207,6 +209,7 @@ def main(categories, k_shot, shot_seed):
         # 可视化Perlin掩模
         if config.use_perlin_mask and config.use_pca_mask:
             logger.info("Generating Perlin mask visualization...")
+            os.makedirs(f"{output_dir}/perlin_mask/", exist_ok=True)
             from perlin import perlin_mask
             
             with torch.no_grad():

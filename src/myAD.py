@@ -42,6 +42,7 @@ class ModelConfig:
 
     # 数据增强控制
     augment_categories: List[str] = None  # 指定使用图像级数据增强的类别列表（少样本模式下生效）
+    flip_categories: List[str] = None  # 仅使用翻转增强的类别列表（少样本模式下生效），适用于 grid 等方向性强的纹理
 
     # 颜色数据增强控制（解决 toothbrush 等多颜色类别的少样本颜色偏差问题）
     color_augment_categories: List[str] = None  # 指定使用颜色增强的类别列表，如 ["toothbrush"]
@@ -1259,11 +1260,12 @@ class Visualizer:
         plt.tight_layout()
         
         if save_path:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
         else:
             plt.show()
-    
+
     @staticmethod
     def visualize_pca_mask(
         image: np.ndarray,
@@ -1302,6 +1304,7 @@ class Visualizer:
         plt.tight_layout()
         
         if save_path:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
             plt.savefig(save_path, dpi=300)
             plt.close()
         else:
