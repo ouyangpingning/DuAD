@@ -39,7 +39,7 @@ perlin_branch_weight = 0.5 # Perlin 分支的权重，较高的值会增加 Perl
 pca_branch_weight = 0.5 # PCA 分支的权重，较高的值会增加 PCA 分支在最终决策中的影响力，但过高可能会导致过拟合
 
 [augment]
-augment_categories = ["hazelnut", "screw"] # 类别特定的增强覆盖，通常选择旋转和翻转等几何增强适合的类别进行增强，以提高模型对几何变化的鲁棒性
+augment_categories = ["grid", "hazelnut", "screw"] # 类别特定的增强覆盖，通常选择旋转和翻转等几何增强适合的类别进行增强，以提高模型对几何变化的鲁棒性
 color_augment_categories = ["toothbrush"] # 类别特定的颜色增强覆盖，通常选择那些颜色特征较弱的类别进行颜色增强，以提高模型对颜色变化的鲁棒性
 
 # 类别特定的 PCA 阈值覆盖
