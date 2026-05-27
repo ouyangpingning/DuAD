@@ -28,11 +28,19 @@ import click
     default=0,
     help='少样本采样种子，需与训练时一致。例如 --shot_seed 42'
 )
-def main(categories, k_shot, shot_seed):
+@click.option(
+    '--skip_inference',
+    is_flag=True,
+    default=False,
+    help='跳过模型推理和异常热力图可视化，仅生成 PCA掩模 / Perlin掩模 / 特征图 / 数据增强图'
+)
+def main(categories, k_shot, shot_seed, skip_inference):
     categories = categories.strip().split()
     print(f"处理类别: {categories}")
     if k_shot is not None:
         print(f"少样本模式: K={k_shot}, seed={shot_seed}")
+    if skip_inference:
+        print("跳过模型推理（--skip_inference），仅生成分析可视化")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -143,70 +151,144 @@ def main(categories, k_shot, shot_seed):
             logger.warning(f"Checkpoint not found: {ckpt_path}")
             continue
 
-        logger.info("Running prediction...")
-        scores, segmentations, labels_gt, masks_gt = detector.predict(test_transform_dataloader)
+        # 加载 PCA Student — 始终从独立文件加载，覆盖主 ckpt 中的旧版本
+        if config.use_pca_student:
+            if k_shot is not None:
+                pca_student_path = os.path.join(ckpt_dir, current_atype,
+                                                f"{current_atype}_k{k_shot}_s{shot_seed}_pca_student_best.pth")
+            else:
+                pca_student_path = os.path.join(ckpt_dir, current_atype,
+                                                f"{current_atype}_pca_student_best.pth")
+            if detector.load_pca_student(pca_student_path):
+                logger.info(f"PCA Student loaded from {pca_student_path}")
+            else:
+                logger.info(f"PCA Student not found at {pca_student_path}, will use SVD fallback.")
 
-        segmentations = np.array(segmentations)
-        masks_gt = np.array(masks_gt)
+        # ---- 模型推理 + 异常热力图（可跳过） ----
+        if not skip_inference:
+            logger.info("Running prediction...")
+            scores, segmentations, labels_gt, masks_gt = detector.predict(test_transform_dataloader)
 
-        logger.info("Generating visualization...")
-        Visualizer.visualize_masks(
-            masks=segmentations,
-            scores=scores,
-            save_path=f"{output_dir}/{current_atype}{vis_suffix}_test.png"
-        )
-        logger.info(f"Test visualization saved to: {output_dir}/{current_atype}{vis_suffix}_test.png")
+            segmentations = np.array(segmentations)
+            masks_gt = np.array(masks_gt)
+
+            logger.info("Generating anomaly heatmap...")
+            Visualizer.visualize_masks(
+                masks=segmentations,
+                scores=scores,
+                save_path=f"{output_dir}/{current_atype}{vis_suffix}_test.png"
+            )
+            logger.info(f"Anomaly heatmap saved to: {output_dir}/{current_atype}{vis_suffix}_test.png")
+        else:
+            logger.info("Skipping model inference (--skip_inference).")
         
-        # 可视化PCA掩模
+        # 可视化PCA掩模（含 MLP / PCA Student 对比）
         if config.use_pca_mask:
             logger.info("Generating PCA mask visualization...")
             os.makedirs(f"{output_dir}/pca_mask/", exist_ok=True)
-            # 从train dataloader获取第一张正常样本
             train_iter = iter(train_transform_dataloader)
             first_train_images, _, _, _ = next(train_iter)
-            sample_image = first_train_images[0:1].to(device)  # [1, C, H, W]
-            
-            # 提取特征并生成PCA掩模
+            sample_image = first_train_images[0:1].to(device)
+
             detector.feature_extractor.eval()
             with torch.no_grad():
                 features, (H, W) = detector.feature_extractor(sample_image)
-                
-                # 创建PCA掩模生成器
-                pca_gen = PCAMaskGenerator(
+
+                # ---- SVD 版本 (无 Student) ----
+                pca_gen_svd = PCAMaskGenerator(
                     threshold=config.pca_threshold,
                     border_ratio=config.pca_border,
                     kernel_size=config.pca_kernel_size,
-                    use_gpu=config.pca_use_gpu, # 是否使用GPU加速PCA计算
-                    skip_categories=config.pca_skip_categories # 传递跳过类别列表
+                    use_gpu=config.pca_use_gpu,
+                    skip_categories=config.pca_skip_categories,
+                    pca_student=None,
                 )
-                # 设置当前类别
-                pca_gen.set_category(current_atype)
-                
-                # 计算第一主成分
+                pca_gen_svd.set_category(current_atype)
+
+                # SVD 第一主成分投影值
                 features_np = features.cpu().numpy()
-                pca = PCA(n_components=1, svd_solver='randomized')
-                first_pc = pca.fit_transform(features_np).squeeze() # 得到投影值
+                pca_sk = PCA(n_components=1, svd_solver='randomized')
+                first_pc = pca_sk.fit_transform(features_np).squeeze()
                 first_pc_2d = first_pc.reshape(H, W)
-                
-                # 生成掩模
-                mask = pca_gen(features, (H, W))
-                mask_2d = mask.cpu().numpy().reshape(H, W)
-                
+
+                # SVD 掩模
+                svd_mask = pca_gen_svd(features, (H, W))
+                svd_mask_2d = svd_mask.cpu().numpy().reshape(H, W)
+
                 # 准备图像
                 img_np = sample_image[0].cpu().permute(1, 2, 0).numpy()
                 img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min() + 1e-8)
-                
-                # 上采样到原始尺寸
+
+                # 上采样
                 first_pc_up = cv2.resize(first_pc_2d, (target_size, target_size))
-                mask_up = cv2.resize(mask_2d.astype(np.float32), (target_size, target_size))
-            
-            # 使用 Visualizer 可视化PCA掩模
-            Visualizer.visualize_pca_mask(
-                image=img_np,
-                mask=mask_up,
-                first_pc=first_pc_up,
-                save_path=f"{output_dir}/pca_mask/{current_atype}{vis_suffix}_pca_mask.png"
-            )
+                svd_mask_up = cv2.resize(svd_mask_2d.astype(np.float32), (target_size, target_size))
+
+                # ---- MLP 版本 (有 PCA Student) ----
+                has_student = (detector.pca_student is not None)
+                if has_student:
+                    detector.pca_student.eval()
+                    pca_gen_mlp = PCAMaskGenerator(
+                        threshold=config.pca_threshold,
+                        border_ratio=config.pca_border,
+                        kernel_size=config.pca_kernel_size,
+                        use_gpu=config.pca_use_gpu,
+                        skip_categories=config.pca_skip_categories,
+                        pca_student=detector.pca_student,
+                    )
+                    pca_gen_mlp.set_category(current_atype)
+
+                    # MLP 掩模
+                    mlp_mask = pca_gen_mlp(features, (H, W))
+                    mlp_mask_2d = mlp_mask.cpu().numpy().reshape(H, W)
+                    mlp_mask_up = cv2.resize(mlp_mask_2d.astype(np.float32), (target_size, target_size))
+
+                    # 计算 IoU
+                    intersection = (svd_mask_2d & mlp_mask_2d).sum()
+                    union = (svd_mask_2d | mlp_mask_2d).sum()
+                    iou = intersection / max(union, 1)
+                    logger.info(f"  PCA Student vs SVD mask IoU: {iou:.4f}")
+
+            # ---- 可视化 ----
+            if has_student:
+                # 一行四列: 原图 | SVD PC | SVD掩模 | MLP掩模
+                fig, axes = plt.subplots(1, 4, figsize=(18, 5))
+                plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei']
+                plt.rcParams['axes.unicode_minus'] = False
+
+                axes[0].imshow(img_np)
+                axes[0].set_title('原图', fontsize=12)
+                axes[0].axis('off')
+
+                im_svd = axes[1].imshow(first_pc_up, cmap='viridis')
+                axes[1].set_title('SVD 第一主成分投影值', fontsize=12)
+                axes[1].axis('off')
+                plt.colorbar(im_svd, ax=axes[1], fraction=0.046)
+
+                axes[2].imshow(img_np)
+                axes[2].imshow(svd_mask_up, cmap='Reds', alpha=0.4)
+                axes[2].set_title(f'SVD 掩模 (fg={svd_mask_2d.mean():.1%})', fontsize=12)
+                axes[2].axis('off')
+
+                axes[3].imshow(img_np)
+                axes[3].imshow(mlp_mask_up, cmap='Reds', alpha=0.4)
+                axes[3].set_title(f'MLP 掩模 (fg={mlp_mask_2d.mean():.1%}, IoU={iou:.3f})',
+                                  fontsize=12)
+                axes[3].axis('off')
+
+                plt.suptitle(f'{current_atype}{vis_suffix} — PCA Mask: SVD vs PCA Student',
+                             fontsize=14)
+                plt.tight_layout()
+                plt.savefig(f"{output_dir}/pca_mask/{current_atype}{vis_suffix}_pca_mask.png",
+                            dpi=200, bbox_inches='tight')
+                plt.close()
+            else:
+                # 无 Student 时使用原有三列布局
+                Visualizer.visualize_pca_mask(
+                    image=img_np,
+                    mask=svd_mask_up,
+                    first_pc=first_pc_up,
+                    save_path=f"{output_dir}/pca_mask/{current_atype}{vis_suffix}_pca_mask.png"
+                )
             logger.info(f"PCA mask visualization saved to: {output_dir}/pca_mask/{current_atype}{vis_suffix}_pca_mask.png")
 
         # 可视化Perlin掩模
@@ -218,7 +300,7 @@ def main(categories, k_shot, shot_seed):
             with torch.no_grad():
                 # 上采样PCA掩码到图像分辨率作为Perlin的前景约束
                 pca_mask_img = F.interpolate(
-                    mask.reshape(1, 1, H, W).float(),
+                    svd_mask.reshape(1, 1, H, W).float(),
                     size=(target_size, target_size),
                     mode='nearest'
                 ).squeeze().cpu().numpy()
@@ -247,7 +329,7 @@ def main(categories, k_shot, shot_seed):
                 axes[0].set_title('原图')
                 axes[0].axis('off')
                 
-                axes[1].imshow(mask_up, cmap='gray')
+                axes[1].imshow(svd_mask_up, cmap='gray')
                 axes[1].set_title('PCA掩模')
                 axes[1].axis('off')
                 

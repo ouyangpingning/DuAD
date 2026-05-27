@@ -99,16 +99,26 @@ def train_category(
     
     # 设置好当前的类别
     model.set_category(atype)
-    
+
     # 定义检查点路径（按类别分目录，少样本模式下带 K/seed 标识）
     cat_ckpt_dir = os.path.join(ckpt_dir, atype)
     os.makedirs(cat_ckpt_dir, exist_ok=True)
     if k_shot is not None:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_best_ckpt.pth")
         latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_latest_ckpt.pth")
+        pca_student_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_pca_student_best.pth")
     else:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_best_ckpt.pth")
         latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_latest_ckpt.pth")
+        pca_student_path = os.path.join(cat_ckpt_dir, f"{atype}_pca_student_best.pth")
+
+    # 训练 PCA Student（若配置启用，在 GAN 训练前用 SVD ground truth 训练替代模型）
+    # 若已有保存的权重则直接加载，避免重复 SVD 收集和训练
+    if model.load_pca_student(pca_student_path):
+        logger.info(f"Loaded existing PCA Student from {pca_student_path}, skipping training.")
+    else:
+        model.train_pca_student(train_loader)
+        model.save_pca_student(pca_student_path)
     
     # 最佳分数追踪
     best_score = {

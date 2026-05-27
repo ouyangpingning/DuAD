@@ -38,6 +38,13 @@ perlin_max = 4 # perlin噪声的最大值决定噪声生成范围
 perlin_branch_weight = 0.5 # Perlin 分支的权重，较高的值会增加 Perlin 分支在最终决策中的影响力，但过高可能会引入过多的噪声
 pca_branch_weight = 0.5 # PCA 分支的权重，较高的值会增加 PCA 分支在最终决策中的影响力，但过高可能会导致过拟合
 
+[pca_student]
+use_pca_student = true          # 是否使用 PCA Student 替代 SVD 推理（加速推理）
+hidden_dims = [512, 128]          # MLP 隐藏层维度
+lr = 0.001                        # Adam 学习率
+epochs = 100                       # PCA Student 训练轮数
+batch_size = 1369                 # 训练时的 mini-batch 大小（patch 级别）
+
 [augment]
 augment_categories = ["grid", "hazelnut", "screw"] # 类别特定的增强覆盖，通常选择旋转和翻转等几何增强适合的类别进行增强，以提高模型对几何变化的鲁棒性
 color_augment_categories = ["toothbrush"] # 类别特定的颜色增强覆盖，通常选择那些颜色特征较弱的类别进行颜色增强，以提高模型对颜色变化的鲁棒性

@@ -40,6 +40,14 @@ fi
 
 echo ""
 
+# --- 1.5 推理跳过选项 ---
+echo "是否包含模型推理可视化（异常热力图）？"
+echo "  推理大约需要 1-2 分钟/类别，跳过则只生成 PCA掩模 / Perlin掩模 / 特征图 / 数据增强图"
+read -p "包含推理？[Y/n] (默认=Y): " include_inference
+include_inference=${include_inference:-Y}
+
+echo ""
+
 # --- 2. 类别选择 ---
 echo "可用的 MVTec AD 类别 (共15类):"
 echo "  bottle cable capsule carpet grid hazelnut leather metal_nut pill screw tile toothbrush transistor wood zipper"
@@ -57,6 +65,7 @@ echo ""
 echo "================================================"
 echo "  配置摘要"
 echo "================================================"
+echo "  推理可视化:   $([[ "$include_inference" =~ ^[Nn] ]] && echo '跳过' || echo '包含')"
 echo "  模型类型:     ${mode_label}"
 echo "  类别列表:     ${categories}"
 if [ "$mode_choice" == "2" ]; then
@@ -86,6 +95,10 @@ for seed in "${seeds[@]}"; do
         session_name="vis_full_s${session_num}"
     fi
 
+    if [[ "$include_inference" =~ ^[Nn] ]]; then
+        cmd_args="${cmd_args} --skip_inference"
+    fi
+
     echo "创建 tmux 会话: ${session_name}"
     echo "  种子: ${seed}"
     echo "  类别: ${categories}"
@@ -108,10 +121,13 @@ echo ""
 echo "完成！共创建 ${session_num} 个 tmux 会话"
 echo ""
 echo "输出目录: ${work_path}/outputs/"
-echo "  - {category}_test.png           异常热力图"
-echo "  - pca_mask/{category}_pca_mask.png   PCA掩模"
+if [[ ! "$include_inference" =~ ^[Nn] ]]; then
+    echo "  - {category}_test.png           异常热力图"
+fi
+echo "  - pca_mask/{category}_pca_mask.png   PCA掩模 (SVD + MLP 对比)"
 echo "  - perlin_mask/{category}_perlin_mask.png  Perlin掩模"
 echo "  - feature_map/{category}_feature_map.png  特征激活图"
+echo "  - augmented/{category}_augmented.png    数据增强效果 (少样本)"
 echo ""
 echo "使用以下命令管理会话:"
 echo "  tmux attach -t <会话名>      # 进入指定会话"

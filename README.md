@@ -37,7 +37,8 @@
 ├── outputs/                     # 可视化 / 实验输出
 ├── results/                     # 汇总 CSV 输出
 ├── docs/
-│   └── ONNX_export_report.md    # ONNX 导出详细报告
+│   ├── ONNX_export_report.md    # ONNX 导出详细报告
+│   └── pca_student.md           # PCA Student 设计与训练流程
 ├── scripts/
 │   └── aggregate_results.py     # 日志汇总统计脚本
 ├── facebookresearch_dinov2_main/  # DINOv2 本地源码（torch.hub 加载）
@@ -134,9 +135,11 @@ python scripts/aggregate_results.py --csv               # CSV 格式输出
 ### 2. PCA 前景掩模
 
 - 对 DINOv2 特征做 PCA（GPU 加速 SVD），取第一主成分投影值
-- 自适应阈值分离前景 / 背景，中心区域保护避免反转
+- **PCA Student（推理加速）**：训练一个小型 MLP 直接预测 SVD 二值掩模，推理时 sigmoid(logits) > 0.5 替代完整 SVD 流程，加速约 **343×**
+- 自适应阈值分离前景 / 背景，中心区域保护避免反转（SVD 路径）
 - 支持类别特定阈值（见 `config.toml` `[category_pca.threshold]`）
 - 纹理/网格类物体自动跳过
+- PCA Student 由 `Trainer.train_pca_student()` 在 GAN 训练前自动训练，权重独立保存为 `{category}_pca_student_best.pth`（不嵌入主 ckpt），已有权重时自动跳过
 
 ### 3. Perlin 噪声掩模
 
@@ -154,8 +157,8 @@ python scripts/aggregate_results.py --csv               # CSV 格式输出
 - 带放回 RandomSampler 保证 batch 填满
 - 少样本自动启数据增强（翻转、旋转），多颜色类别启用颜色增强
 - 多 `--shot_seed` 训练取平均降低采样方差
-- 检查点和日志均独立命名：`model_ckpt/{cat}/{cat}_k{K}_s{seed}_best_ckpt.pth`，`model_log/{cat}/{cat}_k{K}_s{seed}_full.log`
-- 全样本对应 `{cat}_best_ckpt.pth` / `{cat}_full.log`，互不覆盖
+- 检查点和日志均独立命名：`model_ckpt/{cat}/{cat}_k{K}_s{seed}_best_ckpt.pth`、`{cat}_k{K}_s{seed}_pca_student_best.pth`，`model_log/{cat}/{cat}_k{K}_s{seed}_full.log`
+- 全样本对应 `{cat}_best_ckpt.pth` / `{cat}_pca_student_best.pth` / `{cat}_full.log`，互不覆盖
 
 ### 6. ONNX 模型导出
 
@@ -188,25 +191,29 @@ python src/main.py --categories "bottle screw" --k_shot 4 --shot_seed 0
 ## 训练流程
 
 ```
-输入图像 [B, 3, 518, 518]
-  ↓ 冻结 DINOv2 ViT-S/14 (layers [2,5,8,11])
-多层特征 [B, 384, H, W] × 4
-  ↓ _embed_legacy 聚合
-特征 patches [B*H*W, 1536]
-  ↓ PCA 前景掩模（可选）
-前景特征 [N, 1536]
-  ↓ Projection MLP
-投影特征 [N, 1536]
-  ↓ + 高斯噪声
-真假特征 → Discriminator MLP → 异常分数
+[Pre-training] PCA Student (可选，启用 use_pca_student 时)
+  训练图像 → DINOv2 特征 → SVD 掩模 (ground truth) → BCE 训练 MLP
+
+[GAN Training]
+  输入图像 [B, 3, 518, 518]
+    ↓ 冻结 DINOv2 ViT-S/14 (layers [2,5,8,11])
+  多层特征 [B, 384, H, W] × 4
+    ↓ _embed_legacy 聚合
+  特征 patches [B*H*W, 1536]
+    ↓ PCA 前景掩模（可选，PCA Student 或 SVD）
+  前景特征 [N, 1536]
+    ↓ Projection MLP
+  投影特征 [N, 1536]
+    ↓ + 高斯噪声
+  真假特征 → Discriminator MLP → 异常分数
 ```
 
 ### 推理
 
 ```
-测试图像 → DINOv2 → 聚合 → PCA → Projection → Discriminator → 负分数
-                                                       ↓
-                                             上采样 + 高斯平滑 → 像素级热力图
+测试图像 → DINOv2 → 聚合 → PCA Student (sigmoid > 0.5) 或 SVD → Projection → Discriminator → 负分数
+                                                                              ↓
+                                                                    上采样 + 高斯平滑 → 像素级热力图
 ```
 
 ## 可视化
@@ -238,6 +245,7 @@ python src/main.py --categories "bottle screw" --k_shot 4 --shot_seed 0
 [training]         # meta_epochs, gan_epochs, batch_size, 学习率
 [noise]            # 高斯噪声标准差、余弦退火参数
 [pca_mask]         # PCA 掩模阈值、跳过类别
+[pca_student]      # PCA Student: MLP 加速 PCA 掩模推理（~343×）
 [perlin_mask]      # Perlin 掩模、双分支权重
 [augment]          # 几何/颜色增强类别
 [category_pca]     # 类别特定 PCA 阈值和边界
