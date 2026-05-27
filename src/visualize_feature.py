@@ -151,11 +151,21 @@ def main(categories, k_shot, shot_seed, skip_inference):
             logger.warning(f"Checkpoint not found: {ckpt_path}")
             continue
 
-        # 按需训练 PCA Student（不依赖 .pth 文件）
+        # 加载或训练 PCA Student
         if config.use_pca_student:
-            logger.info("Training PCA Student on-the-fly...")
-            detector.train_pca_student(train_transform_dataloader)
-            logger.info("PCA Student training complete.")
+            if k_shot is not None:
+                pca_student_path = os.path.join(ckpt_dir, current_atype,
+                                                f"{current_atype}_k{k_shot}_pca_student_best.pth")
+            else:
+                pca_student_path = os.path.join(ckpt_dir, current_atype,
+                                                f"{current_atype}_pca_student_best.pth")
+            if detector.load_pca_student(pca_student_path):
+                logger.info(f"PCA Student loaded from {pca_student_path}")
+            else:
+                logger.info("Training PCA Student on-the-fly...")
+                detector.train_pca_student(train_transform_dataloader)
+                detector.save_pca_student(pca_student_path)
+                logger.info("PCA Student training complete.")
 
         # ---- 模型推理 + 异常热力图（可跳过） ----
         if not skip_inference:
