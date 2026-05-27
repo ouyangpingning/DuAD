@@ -1052,19 +1052,6 @@ class Predictor:
             projected = self.projection(features_masked)
             patch_scores = -self.discriminator(projected)
             
-            # 日志：打印推理时的特征统计
-            # if self.logger:
-            #     self.logger.debug(
-            #         f"[Predict] Projected shape={tuple(projected.shape)}, "
-            #         f"min={projected.min().item():.4f}, max={projected.max().item():.4f}, "
-            #         f"mean={projected.mean().item():.4f}, std={projected.std().item():.4f}"
-            #     )
-            #     self.logger.debug(
-            #         f"[Predict] PatchScores min={patch_scores.min().item():.4f}, "
-            #         f"max={patch_scores.max().item():.4f}, "
-            #         f"mean={patch_scores.mean().item():.4f}, std={patch_scores.std().item():.4f}"
-            #     )
-            
             # 还原完整特征图（如果用了PCA）-- 因为背景部分的分数没有计算也就是丢掉了这部分patch，所以用最小分数填充
             if self.pca_generator and mask_tensor is not None:
                 full_scores = torch.ones(batch_size * H * W, 1, device=self.config.device)
@@ -1224,43 +1211,6 @@ class DINOv2AnomalyDetector:
 
         self.trainer.train_pca_student(train_dataloader)
         self.pca_student = self.trainer.pca_student
-
-    def save_pca_student(self, path: str):
-        """Save PCA Student weights to a standalone file"""
-        if self.pca_student is None:
-            self.logger.warning("PCA Student is None, nothing to save.")
-            return
-        state = {
-            'pca_student_state': self.pca_student.state_dict(),
-            'pca_student_config': {
-                'input_dim': self.pca_student.input_dim,
-                'hidden_dims': self.pca_student.hidden_dims,
-            }
-        }
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(state, path)
-        self.logger.info(f"PCA Student saved to {path}")
-
-    def load_pca_student(self, path: str) -> bool:
-        """Load PCA Student weights from a standalone file. Returns True if successful."""
-        if not os.path.exists(path):
-            return False
-        state = torch.load(path, map_location=self.config.device)
-        pca_cfg = state.get('pca_student_config', {})
-        self.pca_student = PCAStudent(
-            input_dim=pca_cfg.get('input_dim', self.config.input_planes),
-            hidden_dims=pca_cfg.get('hidden_dims', self.config.pca_student_hidden_dims),
-        ).to(self.config.device)
-        self.pca_student.load_state_dict(state['pca_student_state'])
-        self.pca_student.eval()
-        # 挂接到已有的 trainer / predictor
-        if self.trainer is not None and self.trainer.pca_generator is not None:
-            self.trainer.pca_generator.set_pca_student(self.pca_student)
-        if self.predictor is not None and self.predictor.pca_generator is not None:
-            self.predictor.pca_generator.set_pca_student(self.pca_student)
-        self.logger.info(f"PCA Student loaded from {path}")
-        return True
 
     def fit(self, train_dataloader) -> Dict[str, float]:
         """训练一个 meta epoch"""

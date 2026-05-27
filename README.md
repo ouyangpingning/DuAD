@@ -139,7 +139,7 @@ python scripts/aggregate_results.py --csv               # CSV 格式输出
 - 自适应阈值分离前景 / 背景，中心区域保护避免反转（SVD 路径）
 - 支持类别特定阈值（见 `config.toml` `[category_pca.threshold]`）
 - 纹理/网格类物体自动跳过
-- PCA Student 由 `Trainer.train_pca_student()` 在 GAN 训练前自动训练，权重独立保存为 `{category}_pca_student_best.pth`（不嵌入主 ckpt），已有权重时自动跳过
+- PCA Student 由 `Trainer.train_pca_student()` 按需训练（~1 分钟），不持久化文件，每次训练/可视化时自动训练
 
 ### 3. Perlin 噪声掩模
 
@@ -157,8 +157,8 @@ python scripts/aggregate_results.py --csv               # CSV 格式输出
 - 带放回 RandomSampler 保证 batch 填满
 - 少样本自动启数据增强（翻转、旋转），多颜色类别启用颜色增强
 - 多 `--shot_seed` 训练取平均降低采样方差
-- 检查点和日志均独立命名：`model_ckpt/{cat}/{cat}_k{K}_s{seed}_best_ckpt.pth`、`{cat}_k{K}_s{seed}_pca_student_best.pth`，`model_log/{cat}/{cat}_k{K}_s{seed}_full.log`
-- 全样本对应 `{cat}_best_ckpt.pth` / `{cat}_pca_student_best.pth` / `{cat}_full.log`，互不覆盖
+- 检查点和日志均独立命名：`model_ckpt/{cat}/{cat}_k{K}_s{seed}_best_ckpt.pth`，`model_log/{cat}/{cat}_k{K}_s{seed}_full.log`
+- 全样本对应 `{cat}_best_ckpt.pth` / `{cat}_full.log`，互不覆盖
 
 ### 6. ONNX 模型导出
 
