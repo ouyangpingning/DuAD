@@ -86,8 +86,6 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 - **PCA Student** (`PCAStudent`): MLP trained on-the-fly by `Trainer.train_pca_student()` before GAN training. Phase 1: collect SVD masks via `PCAMaskGenerator`, Phase 2: train `BCEWithLogitsLoss`, Phase 3: plug into Trainer's PCA generator. At inference, sigmoid(logits) > 0.5 replaces the full SVD PCA pipeline (~343× faster). Config: `[pca_student]` in config.toml. Trained per-category, not persisted to disk.
 - **PCAMaskGenerator**: GPU-accelerated SVD for PCA foreground/background separation. Auto-reverses mask if center region has too few foreground pixels. Respects `skip_categories` for texture classes.
 - **Dual-branch GAN**: Perlin branch (BCE, localized noise) + PCA branch (Hinge, global noise). Weights: `perlin_branch_weight` / `pca_branch_weight`. Falls back to single-branch Hinge when PCA mask disabled.
-- **Checkpoint resume**: Auto-detects `*_latest_ckpt.pth`, restores model/optimizer/scheduler state, continues from saved epoch. `latest_ckpt` deleted on clean completion.
-
 ## Important conventions
 
 - **All hyperparameters are managed in `config.toml`** — edit this file to change params; both `main.py` and `visualize_feature.py` read from here
@@ -96,8 +94,6 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 - MVTec AD dataset path set in `config.toml` `[paths] base_dir`
 - Checkpoints: `./model_ckpt/{category}/{category}_best_ckpt.pth` (full) or `{category}_k{K}_s{seed}_best_ckpt.pth` (few-shot)
 - PCA Student: `./model_ckpt/{category}/{category}_k{K}_pca_student_best.pth` (few-shot, 所有 seed 共享)
-- `*_latest_ckpt.pth` for resume; auto-deleted on training completion
-- PCA Student is embedded in main checkpoints for resume support
 - Logs: `./model_log/{category}/{category}_full.log` (full) or `{category}_k{K}_s{seed}_full.log` (few-shot)
 - ONNX models: `./model_onnx/{category}_k{K}_s{seed}_full.onnx`
 - `Trainer` applies `proj_lr * 0.1` to the actual AdamW optimizer

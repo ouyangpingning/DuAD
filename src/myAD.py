@@ -954,28 +954,6 @@ class Trainer:
             self.pca_generator.set_pca_student(self.pca_student)
             self.logger.info("PCA Student attached to Trainer's PCA generator.")
 
-    def get_state(self) -> Dict:
-        """获取训练状态"""
-        return {
-            'global_step': self.global_step,
-            'current_meta_epoch': self.current_meta_epoch,
-            'proj_state': self.projection.state_dict(),
-            'dsc_state': self.discriminator.state_dict(),
-            'optimizer_proj': self.optimizer_proj.state_dict(),
-            'optimizer_dsc': self.optimizer_dsc.state_dict(),
-            'scheduler': self.scheduler.state_dict() if self.scheduler else None
-        }
-
-    def load_state(self, state: Dict):
-        """恢复训练状态"""
-        self.projection.load_state_dict(state['proj_state'])
-        self.discriminator.load_state_dict(state['dsc_state'])
-        self.optimizer_proj.load_state_dict(state['optimizer_proj'])
-        self.optimizer_dsc.load_state_dict(state['optimizer_dsc'])
-        if self.scheduler and state.get('scheduler'):
-            self.scheduler.load_state_dict(state['scheduler'])
-        self.global_step = state['global_step']
-        self.current_meta_epoch = state.get('current_meta_epoch', 0)
 
 
 class Predictor:
@@ -1294,98 +1272,27 @@ class DINOv2AnomalyDetector:
 
         return self.predictor.predict(test_dataloader, aggregation)
     
-    def save(self, path: str, epoch: int = 0, scores: dict = None, best_score: dict = None, best_epoch: int = -1):
-        """保存检查点"""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
+    def save(self, path: str, epoch: int = 0, scores: dict = None):
+        """保存模型权重（仅 Projection + Discriminator）"""
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         state = {
-            'config': vars(self.config),
+            'proj_state': self.projection.state_dict(),
+            'dsc_state': self.discriminator.state_dict(),
             'epoch': epoch,
             'scores': scores,
-            'best_score': best_score,
-            'best_epoch': best_epoch,
-            'trainer_state': self.trainer.get_state() if self.trainer else None
         }
-
-        # 嵌入 PCA Student 状态（断点续训时恢复）
-        if self.pca_student is not None:
-            state['pca_student_state'] = self.pca_student.state_dict()
-            state['pca_student_config'] = {
-                'input_dim': self.pca_student.input_dim,
-                'hidden_dims': self.pca_student.hidden_dims,
-            }
-
         torch.save(state, path)
         self.logger.info(f"Checkpoint saved to {path}")
-    
+
     def load(self, path: str):
-        """加载检查点"""
+        """加载模型权重，清空 Trainer/Predictor 使其使用新权重重建"""
         state = torch.load(path, map_location=self.config.device)
-        
-        # 恢复配置
-        saved_config = state.get('config', {})
-        # 仅恢复影响模型结构的架构参数；其余（训练超参、噪声、阈值、开关等）始终由 config.toml 控制
-        _restore_keys = {'target_size', 'layer_indices', 'input_planes', 'hidden_dim', 'patch_size'}
-        for key, value in saved_config.items():
-            if hasattr(self.config, key) and key in _restore_keys:
-                setattr(self.config, key, value)
-        
-        # 根据恢复的 config 重建模型组件，确保结构与训练时一致
-        self.feature_extractor = FeatureExtractor(
-            model_path=self.model_path,
-            layer_indices=self.config.layer_indices,
-            patch_size=self.config.patch_size,
-            device=self.config.device,
-        )
-        self.projection = Projection(
-            in_planes=self.config.input_planes,
-            n_layers=2,
-            layer_type=0
-        ).to(self.config.device)
-        self.discriminator = Discriminator(
-            in_planes=self.config.hidden_dim,
-            n_layers=2,
-            hidden=self.config.hidden_dim
-        ).to(self.config.device)
-        
-        # 清空旧的 trainer/predictor，让它们使用新的模型组件重新创建
+        self.projection.load_state_dict(state['proj_state'])
+        self.discriminator.load_state_dict(state['dsc_state'])
         self.trainer = None
         self.predictor = None
-        
-        # 恢复模型权重
-        if state.get('trainer_state'):
-            self.trainer = Trainer(
-                self.feature_extractor,
-                self.projection,
-                self.discriminator,
-                self.config,
-                self.logger
-            )
-            self.trainer.load_state(state['trainer_state'])
-
-        # 恢复 PCA Student（优先 checkpoint 嵌入，否则保留独立文件加载的）
-        _pca_student_fallback = self.pca_student  # 可能已从独立 .pth 加载
-        self.pca_student = None
-        if self.config.use_pca_student and 'pca_student_state' in state:
-            pca_cfg = state.get('pca_student_config', {})
-            self.pca_student = PCAStudent(
-                input_dim=pca_cfg.get('input_dim', self.config.input_planes),
-                hidden_dims=pca_cfg.get('hidden_dims', self.config.pca_student_hidden_dims),
-            ).to(self.config.device)
-            self.pca_student.load_state_dict(state['pca_student_state'])
-            self.pca_student.eval()
-            if self.trainer is not None and self.trainer.pca_generator is not None:
-                self.trainer.pca_generator.set_pca_student(self.pca_student)
-            self.logger.info("PCA Student restored from checkpoint.")
-        elif _pca_student_fallback is not None:
-            self.pca_student = _pca_student_fallback
-            if self.trainer is not None and self.trainer.pca_generator is not None:
-                self.trainer.pca_generator.set_pca_student(self.pca_student)
-            self.logger.info("PCA Student retained from standalone file.")
-
         self.logger.info(f"Checkpoint loaded from {path}")
-        return state.get('epoch', 0), state.get('scores'), state.get('best_score'), state.get('best_epoch', -1)
+        return state.get('epoch', 0), state.get('scores', None), None, -1
     
     def evaluate(
                 self,

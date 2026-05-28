@@ -105,12 +105,10 @@ def train_category(
     os.makedirs(cat_ckpt_dir, exist_ok=True)
     if k_shot is not None:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_best_ckpt.pth")
-        latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_latest_ckpt.pth")
         # PCA Student 与 seed 无关 — 同 K 值所有 seed 共享
         pca_student_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_pca_student_best.pth")
     else:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_best_ckpt.pth")
-        latest_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_latest_ckpt.pth")
         pca_student_path = os.path.join(cat_ckpt_dir, f"{atype}_pca_student_best.pth")
 
     # 训练/加载 PCA Student — 文件锁协调并行 tmux，断点续训时从 latest_ckpt 恢复
@@ -150,22 +148,7 @@ def train_category(
     }
     best_epoch = -1
 
-    # 断点续训：如果存在 latest_ckpt 则恢复训练状态
-    start_epoch = 0
-    if os.path.exists(latest_ckpt_path):
-        logger.info(f"Found latest checkpoint, resuming from {latest_ckpt_path}")
-        saved_epoch, _, saved_best_score, saved_best_epoch = model.load(latest_ckpt_path)
-        start_epoch = saved_epoch + 1
-        if saved_best_score:
-            best_score.update(saved_best_score)
-            best_epoch = saved_best_epoch
-        # 同步 Trainer 内部 epoch 计数器，确保日志与 main 循环的 epoch 一致
-        if model.trainer:
-            model.trainer.current_meta_epoch = saved_epoch
-        logger.info(f"Resume from epoch {start_epoch}, best_epoch={best_epoch}")
-
-    # 训练循环
-    for epoch in range(start_epoch, config.meta_epochs):
+    for epoch in range(config.meta_epochs):
         logger.info(50 * "=" + f" Meta Epoch: {epoch}/{config.meta_epochs} " + 50 * "=")
         
         # === 训练阶段 ===
@@ -206,15 +189,6 @@ def train_category(
             logger.info(f"  Image AUROC: {best_score['image_auroc']:.4f}")
             logger.info(f"  Pixel AUROC: {best_score['pixel_auroc']:.4f}")
             logger.info('@' * 50)
-
-        # 每个 epoch 保存最新模型用于断点续训
-        model.save(latest_ckpt_path, epoch=epoch, scores=current_score,
-                   best_score=best_score, best_epoch=best_epoch)
-
-    # 训练完成，删除 latest_ckpt
-    if os.path.exists(latest_ckpt_path):
-        os.remove(latest_ckpt_path)
-        logger.info(f"Removed latest checkpoint: {latest_ckpt_path}")
 
     # === 最终完整评估（加载 best checkpoint 计算全部指标）===
     logger.info(f"\n{'='*60}")
