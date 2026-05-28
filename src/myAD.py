@@ -1325,10 +1325,10 @@ class DINOv2AnomalyDetector:
         
         # 恢复配置
         saved_config = state.get('config', {})
-        # 不从 checkpoint 恢复用户可控的开关项，这些应始终由 config.toml 控制
-        _skip_keys = {'use_pca_student', 'use_pca_mask', 'use_perlin_mask'}
+        # 仅恢复影响模型结构的架构参数；其余（训练超参、噪声、阈值、开关等）始终由 config.toml 控制
+        _restore_keys = {'target_size', 'layer_indices', 'input_planes', 'hidden_dim', 'patch_size'}
         for key, value in saved_config.items():
-            if hasattr(self.config, key) and key not in _skip_keys:
+            if hasattr(self.config, key) and key in _restore_keys:
                 setattr(self.config, key, value)
         
         # 根据恢复的 config 重建模型组件，确保结构与训练时一致
@@ -1364,7 +1364,8 @@ class DINOv2AnomalyDetector:
             )
             self.trainer.load_state(state['trainer_state'])
 
-        # 恢复 PCA Student（仅在 config.toml 启用时恢复）
+        # 恢复 PCA Student（优先 checkpoint 嵌入，否则保留独立文件加载的）
+        _pca_student_fallback = self.pca_student  # 可能已从独立 .pth 加载
         self.pca_student = None
         if self.config.use_pca_student and 'pca_student_state' in state:
             pca_cfg = state.get('pca_student_config', {})
@@ -1377,6 +1378,11 @@ class DINOv2AnomalyDetector:
             if self.trainer is not None and self.trainer.pca_generator is not None:
                 self.trainer.pca_generator.set_pca_student(self.pca_student)
             self.logger.info("PCA Student restored from checkpoint.")
+        elif _pca_student_fallback is not None:
+            self.pca_student = _pca_student_fallback
+            if self.trainer is not None and self.trainer.pca_generator is not None:
+                self.trainer.pca_generator.set_pca_student(self.pca_student)
+            self.logger.info("PCA Student retained from standalone file.")
 
         self.logger.info(f"Checkpoint loaded from {path}")
         return state.get('epoch', 0), state.get('scores'), state.get('best_score'), state.get('best_epoch', -1)
