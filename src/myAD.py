@@ -1325,8 +1325,10 @@ class DINOv2AnomalyDetector:
         
         # 恢复配置
         saved_config = state.get('config', {})
+        # 不从 checkpoint 恢复用户可控的开关项，这些应始终由 config.toml 控制
+        _skip_keys = {'use_pca_student', 'use_pca_mask', 'use_perlin_mask'}
         for key, value in saved_config.items():
-            if hasattr(self.config, key):
+            if hasattr(self.config, key) and key not in _skip_keys:
                 setattr(self.config, key, value)
         
         # 根据恢复的 config 重建模型组件，确保结构与训练时一致
@@ -1362,9 +1364,9 @@ class DINOv2AnomalyDetector:
             )
             self.trainer.load_state(state['trainer_state'])
 
-        # 恢复 PCA Student（断点续训时保留）
+        # 恢复 PCA Student（仅在 config.toml 启用时恢复）
         self.pca_student = None
-        if 'pca_student_state' in state:
+        if self.config.use_pca_student and 'pca_student_state' in state:
             pca_cfg = state.get('pca_student_config', {})
             self.pca_student = PCAStudent(
                 input_dim=pca_cfg.get('input_dim', self.config.input_planes),
