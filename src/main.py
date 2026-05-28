@@ -105,36 +105,11 @@ def train_category(
     os.makedirs(cat_ckpt_dir, exist_ok=True)
     if k_shot is not None:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_best_ckpt.pth")
-        # PCA Student 与 seed 无关 — 同 K 值所有 seed 共享
-        pca_student_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_pca_student_best.pth")
     else:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_best_ckpt.pth")
-        pca_student_path = os.path.join(cat_ckpt_dir, f"{atype}_pca_student_best.pth")
 
-    # 训练/加载 PCA Student — 文件锁协调并行 tmux，断点续训时从 latest_ckpt 恢复
-    if model.load_pca_student(pca_student_path):
-        logger.info(f"Loaded existing PCA Student from {pca_student_path}, skipping training.")
-    else:
-        import time as _time
-        pca_lock_path = pca_student_path + ".lock"
-        try:
-            _fd = os.open(pca_lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            os.close(_fd)
-            logger.info("PCA Student lock acquired, training...")
-            model.train_pca_student(train_loader)
-            model.save_pca_student(pca_student_path)
-            os.remove(pca_lock_path)
-            logger.info("PCA Student lock released.")
-        except FileExistsError:
-            logger.info("Another process is training PCA Student, waiting (timeout 600s)...")
-            for _ in range(600):
-                _time.sleep(1)
-                if model.load_pca_student(pca_student_path):
-                    logger.info("PCA Student loaded after waiting.")
-                    break
-            else:
-                logger.warning("Timeout waiting for PCA Student, training locally.")
-                model.train_pca_student(train_loader)
+    # 训练 PCA Student（每次按需训练，不持久化）
+    model.train_pca_student(train_loader)
 
     # 最佳分数追踪
     best_score = {

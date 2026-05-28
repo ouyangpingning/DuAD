@@ -119,36 +119,10 @@ probs > 0.5 → 形态学处理 → 二值掩模
 
 ## 训练策略
 
-### 缓存与共享
+PCA Student 不持久化——每次训练或可视化时按需训练（~1 分钟），不保存 `.pth` 文件。
 
-```
-少样本 K=4:  screw_k4_pca_student_best.pth   ← 所有 seed (0, 42, 123, ...) 共享
-全样本:       screw_pca_student_best.pth
-```
-
-PCA Student 与 seed 无关——同 K 值所有 seed 共享同一份权重。训练完成后保存到 `model_ckpt/{category}/`。
-
-### 并行协调（文件锁）
-
-多个 tmux 会话同时启动同类别不同 seed 时，用文件锁协调：
-
-```
-1. 尝试 load_pca_student(.pth) → 存在则加载，跳过训练
-2. 不存在 → 尝试创建 .pth.lock (os.O_CREAT | O_EXCL, 原子操作)
-   ├─ 成功: 训练 → save_pca_student(.pth) → 删除 .lock
-   └─ 失败 (FileExistsError): 另一进程正在训练
-      → 每秒轮询 load_pca_student(.pth), 最多等 600s
-      → 加载成功: 继续; 超时: 本地训练
-```
-
-### 可视化
-
-`visualize_feature.py` 优先加载 `.pth` 缓存，不存在时按需训练并保存：
-
-```
-load_pca_student(.pth) → 成功: 使用
-                       → 失败: train_pca_student() → save_pca_student(.pth) → 使用
-```
+- **训练**：`main.py` 在 GAN 训练前调用 `model.train_pca_student(train_loader)`，训练完成后 student 常驻 Trainer 的 `pca_generator`
+- **可视化**：`visualize_feature.py` 在生成掩模前调用 `detector.train_pca_student(train_loader)`，用完即弃
 
 ## 代码结构
 
@@ -157,10 +131,9 @@ load_pca_student(.pth) → 成功: 使用
 | `PCAStudent` | `src/myAD.py` | 模型定义（MLP + raw logits 输出） |
 | `PCAMaskGenerator` | `src/myAD.py` | 掩模生成：MLP 路径（sigmoid→0.5→形态学）或 SVD 回退 |
 | `Trainer.train_pca_student()` | `src/myAD.py` | Phase 1/2/3 完整训练逻辑 |
-| `DINOv2AnomalyDetector.train_pca_student()` | `src/myAD.py` | 薄封装：检查→已有则跳过→否则委托 Trainer |
-| `DINOv2AnomalyDetector.save_pca_student()` / `load_pca_student()` | `src/myAD.py` | 独立 .pth 文件 I/O |
-| `main.py` `train_category()` | `src/main.py` | 编排：load → 文件锁 → train → save |
-| `visualize_feature.py` | `src/visualize_feature.py` | 可视化：load .pth 或按需训练 |
+| `DINOv2AnomalyDetector.train_pca_student()` | `src/myAD.py` | 薄封装：检查开关→创建 Trainer→委托训练 |
+| `main.py` `train_category()` | `src/main.py` | 在 GAN 训练前调用一次 |
+| `visualize_feature.py` | `src/visualize_feature.py` | 在可视化前调用一次 |
 
 ## 实验结果
 
@@ -203,7 +176,7 @@ MLP 掩模与 SVD 掩模高度一致，正常和异常图像的 IoU 无显著差
 # 2. 正常训练（PCA Student 会在 GAN 训练前自动训练/加载）
 python src/main.py --categories "screw bottle"
 
-# 3. 可视化（自动加载 .pth 缓存或按需训练）
+# 3. 可视化（按需训练 PCA Student）
 python src/visualize_feature.py --categories "screw" --k_shot 4 --shot_seed 0
 
 # 4. 仅分析可视化（跳过推理）

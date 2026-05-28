@@ -139,7 +139,7 @@ python scripts/aggregate_results.py --csv               # CSV 格式输出
 - 自适应阈值分离前景 / 背景，中心区域保护避免反转（SVD 路径）
 - 支持类别特定阈值（见 `config.toml` `[category_pca.threshold]`）
 - 纹理/网格类物体自动跳过
-- PCA Student 由 `Trainer.train_pca_student()` 按需训练（~1 分钟），权重缓存为 `{category}_k{K}_pca_student_best.pth`（同 K 所有 seed 共享，文件锁协调并行）
+- PCA Student 由 `Trainer.train_pca_student()` 每次按需训练（~1 分钟），不持久化文件
 
 ### 3. Perlin 噪声掩模
 

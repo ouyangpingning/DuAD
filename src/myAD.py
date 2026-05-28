@@ -1169,26 +1169,13 @@ class DINOv2AnomalyDetector:
         self.logger.info(f"Set current category: {category}")
 
     def train_pca_student(self, train_dataloader) -> None:
-        """训练 PCA Student，若已有（断点续训恢复或从 .pth 加载）则跳过"""
+        """训练 PCA Student（每次调用都重新训练），委托给 Trainer 执行"""
         if not self.config.use_pca_student:
             self.logger.info("PCA Student is disabled (use_pca_student=False). Skipping.")
             return
 
         if not self.config.use_pca_mask:
             self.logger.warning("PCA Student requires PCA mask (use_pca_mask=True). Skipping.")
-            return
-
-        if self.pca_student is not None:
-            self.logger.info("PCA Student already loaded, skipping training.")
-            if self.trainer is None:
-                self.trainer = Trainer(
-                    self.feature_extractor, self.projection,
-                    self.discriminator, self.config, self.logger
-                )
-                if self.current_category is not None and self.trainer.pca_generator:
-                    self.trainer.pca_generator.set_category(self.current_category)
-                if self.trainer.pca_generator is not None:
-                    self.trainer.pca_generator.set_pca_student(self.pca_student)
             return
 
         if self.trainer is None:
@@ -1201,41 +1188,6 @@ class DINOv2AnomalyDetector:
 
         self.trainer.train_pca_student(train_dataloader)
         self.pca_student = self.trainer.pca_student
-
-    def save_pca_student(self, path: str):
-        """保存 PCA Student 权重到独立文件"""
-        if self.pca_student is None:
-            self.logger.warning("PCA Student is None, nothing to save.")
-            return
-        state = {
-            'pca_student_state': self.pca_student.state_dict(),
-            'pca_student_config': {
-                'input_dim': self.pca_student.input_dim,
-                'hidden_dims': self.pca_student.hidden_dims,
-            }
-        }
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save(state, path)
-        self.logger.info(f"PCA Student saved to {path}")
-
-    def load_pca_student(self, path: str) -> bool:
-        """从独立文件加载 PCA Student 权重。成功返回 True。"""
-        if not os.path.exists(path):
-            return False
-        state = torch.load(path, map_location=self.config.device)
-        pca_cfg = state.get('pca_student_config', {})
-        self.pca_student = PCAStudent(
-            input_dim=pca_cfg.get('input_dim', self.config.input_planes),
-            hidden_dims=pca_cfg.get('hidden_dims', self.config.pca_student_hidden_dims),
-        ).to(self.config.device)
-        self.pca_student.load_state_dict(state['pca_student_state'])
-        self.pca_student.eval()
-        if self.trainer is not None and self.trainer.pca_generator is not None:
-            self.trainer.pca_generator.set_pca_student(self.pca_student)
-        if self.predictor is not None and self.predictor.pca_generator is not None:
-            self.predictor.pca_generator.set_pca_student(self.pca_student)
-        self.logger.info(f"PCA Student loaded from {path}")
-        return True
 
     def fit(self, train_dataloader) -> Dict[str, float]:
         """训练一个 meta epoch"""

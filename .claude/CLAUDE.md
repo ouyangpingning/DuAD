@@ -93,7 +93,6 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 - DINOv2 is loaded via `torch.hub.load` with `source='local'` from `facebookresearch_dinov2_main/`
 - MVTec AD dataset path set in `config.toml` `[paths] base_dir`
 - Checkpoints: `./model_ckpt/{category}/{category}_best_ckpt.pth` (full) or `{category}_k{K}_s{seed}_best_ckpt.pth` (few-shot)
-- PCA Student: `./model_ckpt/{category}/{category}_k{K}_pca_student_best.pth` (few-shot, 所有 seed 共享)
 - Logs: `./model_log/{category}/{category}_full.log` (full) or `{category}_k{K}_s{seed}_full.log` (few-shot)
 - ONNX models: `./model_onnx/{category}_k{K}_s{seed}_full.onnx`
 - `Trainer` applies `proj_lr * 0.1` to the actual AdamW optimizer
