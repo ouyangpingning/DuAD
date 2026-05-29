@@ -3,7 +3,9 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_proj_root, "src"))
+sys.path.insert(0, _proj_root)
 
 from commen_import import *
 from dataset import get_mvtec_dataloader, get_transform

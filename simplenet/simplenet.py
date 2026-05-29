@@ -17,6 +17,7 @@ import os
 _src_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 sys.path.insert(0, _src_dir)
 from commen_import import *
+import scipy.ndimage as ndimage
 from utils import (
     compute_imagewise_retrieval_metrics,
     compute_pixelwise_retrieval_metrics,
