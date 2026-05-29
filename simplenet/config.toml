@@ -1,0 +1,31 @@
+# SimpleNet — 统一参数配置
+# 主干网络: WideResNet50-2, 使用 layer2 + layer3 特征
+
+[architecture]
+target_size = 288              # 输入图像尺寸
+layer_indices = [1, 2]        # WideResNet50-2 层索引: 1=layer2(512d), 2=layer3(1024d)
+input_planes = 1536            # 融合后特征维度 (512+1024 → pool → 1536)
+hidden_dim = 1024              # 判别器隐藏层维度
+
+[training]
+meta_epochs = 40               # 外部训练轮数
+gan_epochs = 4                 # 内部 GAN 训练轮数
+batch_size = 8                 # 批次大小
+proj_lr = 0.001                # 投影器学习率 (实际使用 proj_lr * 0.1)
+dsc_lr = 0.0002                # 判别器学习率
+dsc_margin = 0.5               # Hinge loss margin
+use_scheduler = true           # 是否使用余弦退火学习率调度器
+
+[noise]
+noise_std = 0.015              # 高斯噪声标准差
+mix_noise = 1                  # 噪声强度种类数 (1 = 单一强度)
+
+[paths]
+base_dir = "/root/siton-tmp/mvtec_anomaly_detection"
+ckpt_dir = "./model_ckpt/simplenet"
+log_dir = "./model_log/simplenet"
+
+[misc]
+patch_size = 3
+resize = 329                   # 先 resize 到此尺寸
+isize = 288                    # 再中心裁剪到此尺寸
