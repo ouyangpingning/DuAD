@@ -22,13 +22,16 @@
 ├── requirements.txt
 ├── train_all_tmux.sh            # 交互式批量训练脚本（tmux 并行）
 ├── visualize_all_tmux.sh        # 交互式批量可视化脚本（tmux 并行）
+├── export_onnx_all_tmux.sh      # 交互式 ONNX 导出脚本（单类别）
 ├── aggregate_results.sh         # 交互式结果汇总脚本
 ├── model_ckpt/                  # 模型检查点（按类别分目录）
 │   ├── bottle/
 │   ├── screw/
 │   └── ...
 ├── model_onnx/                  # ONNX 导出模型（端到端推理）
-│   ├── bottle_k2_s0_full.onnx
+│   ├── bottle_full.onnx
+│   ├── bottle_full_student.onnx
+│   ├── bottle_pca_student.pth
 │   └── ...
 ├── model_log/                   # 训练日志（按类别分目录）
 │   ├── bottle/
@@ -109,6 +112,17 @@ python src/visualize_feature.py --categories "bottle" --k_shot 4 --shot_seed 42
 bash visualize_all_tmux.sh
 ```
 
+### ONNX 导出
+
+```bash
+# 交互式导出 (推荐，单类别)
+bash export_onnx_all_tmux.sh
+
+# 或直接调用
+python src/export_onnx.py --category bottle
+python src/export_onnx.py --category bottle --pca_mode student --verify
+```
+
 ### 结果汇总
 
 ```bash
@@ -162,19 +176,30 @@ python scripts/aggregate_results.py --csv               # CSV 格式输出
 
 ### 6. ONNX 模型导出
 
-支持将训练好的模型导出为 ONNX 格式进行部署推理：
+支持将训练好的模型导出为 ONNX 格式进行部署推理，可选 **SVD** 或 **PCA Student** 两种 PCA 模式：
 
 ```bash
-# 导出全样本模型
+# 命令行调用 — SVD 模式 (默认)
 python src/export_onnx.py --category bottle
 
-# 导出少样本模型并验证
-python src/export_onnx.py --category bottle --k_shot 2 --shot_seed 0 --verify
+# PCA Student 模式 (自动训练 + 导出端到端 ONNX)
+python src/export_onnx.py --category bottle --pca_mode student --verify
+
+# 少样本
+python src/export_onnx.py --category bottle --k_shot 4 --shot_seed 0 --pca_mode student --verify
+
+# 交互式导出 (推荐)
+bash export_onnx_all_tmux.sh
 ```
 
-导出模型包含完整的端到端推理流程（DINOv2 → 特征聚合 → Projection → Discriminator → 后处理），仅需 `onnxruntime` 即可推理，不依赖 PyTorch 环境。
+| 模式 | 产物 | 输入 |
+|------|------|------|
+| SVD (默认) | `model_onnx/{category}_full.onnx` | image + mask |
+| PCA Student | `model_onnx/{category}_full_student.onnx` | image only |
 
-详细说明见 [`docs/ONNX_export_report.md`](docs/ONNX_export_report.md)。
+**PCA Student 模式**会在导出时自动训练 PCA Student MLP（~1 分钟），内嵌到 ONNX 模型中，实现单次 DINOv2 前向的端到端推理，PCA mask 生成比 SVD 快 ~1200×。
+
+详细说明见 [`docs/ONNX_export_report.md`](docs/ONNX_export_report.md) 和 [`docs/pca_student.md`](docs/pca_student.md)。
 
 ## 训练流程
 
