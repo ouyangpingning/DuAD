@@ -17,6 +17,7 @@ def build_simplenet_config(cfg: dict, device: str = "cuda") -> SimpleNetConfig:
     arch = cfg["architecture"]
     train = cfg["training"]
     noise = cfg["noise"]
+    augment = cfg["augment"]
     misc = cfg["misc"]
 
     return SimpleNetConfig(
@@ -33,6 +34,8 @@ def build_simplenet_config(cfg: dict, device: str = "cuda") -> SimpleNetConfig:
         use_scheduler=train["use_scheduler"],
         noise_std=noise["noise_std"],
         mix_noise=noise["mix_noise"],
+        augment_categories=list(augment["augment_categories"]),
+        color_augment_categories=list(augment["color_augment_categories"]),
         patch_size=misc["patch_size"],
         resize=misc["resize"],
         isize=misc["isize"],

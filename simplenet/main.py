@@ -43,9 +43,26 @@ def train_category(
 
     set_seed(0)
 
+    # 数据增强（消融实验）：少样本时启用，与 DuAD 的增强策略对齐
+    enable_augment = False
+    if k_shot is not None:
+        if config.augment_categories is None:
+            enable_augment = True
+        elif atype in config.augment_categories:
+            enable_augment = True
+    logger.info(f"Image augmentation: {enable_augment}")
+
+    enable_color_augment = False
+    if k_shot is not None:
+        if config.color_augment_categories is not None:
+            enable_color_augment = atype in config.color_augment_categories
+    logger.info(f"Color augmentation: {enable_color_augment}")
+
     train_transform, test_transform, gt_transform = get_transform(
         size=config.resize,
         isize=config.isize,
+        augment=enable_augment,
+        color_augment=enable_color_augment,
     )
     train_loader, test_loader = get_mvtec_dataloader(
         root_dir=base_dir,
