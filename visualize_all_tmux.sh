@@ -12,8 +12,19 @@ work_path="$(cd "$(dirname "$0")" && pwd)"
 
 # ==================== 交互式配置 ====================
 echo "================================================"
-echo "  MVTec AD 可视化脚本 - 交互式配置"
+echo "  异常检测可视化脚本 - 交互式配置"
 echo "================================================"
+echo ""
+echo "本脚本支持两种使用场景:"
+echo ""
+echo "     场景A — 模型分析 (需要 .pth 文件)"
+echo "     生成异常热力图 + PCA掩模 + Perlin掩模 + 特征图 + 数据增强图"
+echo "     适用于: 已训练完模型，想查看检测效果"
+echo ""
+echo "     场景B — 数据分析 (无需 .pth 文件)"
+echo "     生成 PCA掩模 + Perlin掩模 + 特征图 + 数据增强图"
+echo "     适用于: 训练前分析数据特征，辅助调参（threshold / border / skip_categories）"
+echo "     用法:  后面选择「跳过推理」即可"
 echo ""
 
 # --- 1. 模式选择 ---
@@ -42,19 +53,39 @@ echo ""
 
 # --- 1.5 推理跳过选项 ---
 echo "是否包含模型推理可视化（异常热力图）？"
-echo "  推理大约需要 1-2 分钟/类别，跳过则只生成 PCA掩模 / Perlin掩模 / 特征图 / 数据增强图"
+echo "  场景A 请选 Y（需要 .pth）  |  场景B 请选 n（无需 .pth）"
 read -p "包含推理？[Y/n] (默认=Y): " include_inference
 include_inference=${include_inference:-Y}
 
 echo ""
 
-# --- 2. 类别选择 ---
-echo "可用的 MVTec AD 类别 (共15类):"
-echo "  bottle cable capsule carpet grid hazelnut leather metal_nut pill screw tile toothbrush transistor wood zipper"
+# --- 2. 数据集选择 ---
+echo "请选择数据集:"
+echo "  [1] MVTec AD (15类)"
+echo "  [2] VisA (12类)"
+read -p "输入选项 [1/2] (默认=1): " dataset_choice
+dataset_choice=${dataset_choice:-1}
+
+if [ "$dataset_choice" == "2" ]; then
+    dataset="visa"
+    default_cats="candle capsules cashew chewinggum fryum macaroni1 macaroni2 pcb1 pcb2 pcb3 pcb4 pipe_fryum"
+    cat_list_label="VisA 类别 (共12类)"
+else
+    dataset="mvtec"
+    default_cats="bottle cable capsule carpet grid hazelnut leather metal_nut pill screw tile toothbrush transistor wood zipper"
+    cat_list_label="MVTec AD 类别 (共15类)"
+fi
+extra_args="$extra_args --dataset ${dataset}"
+
 echo ""
-read -p "输入要可视化的类别，空格分隔（回车=全部15类）: " categories_input
+
+# --- 3. 类别选择 ---
+echo "可用的 ${cat_list_label}:"
+echo "  ${default_cats}"
+echo ""
+read -p "输入要可视化的类别，空格分隔（回车=全部）: " categories_input
 if [ -z "$categories_input" ]; then
-    categories="bottle cable capsule carpet grid hazelnut leather metal_nut pill screw tile toothbrush transistor wood zipper"
+    categories="$default_cats"
 else
     categories="$categories_input"
 fi
@@ -66,6 +97,7 @@ echo "================================================"
 echo "  配置摘要"
 echo "================================================"
 echo "  推理可视化:   $([[ "$include_inference" =~ ^[Nn] ]] && echo '跳过' || echo '包含')"
+echo "  数据集:       ${dataset}"
 echo "  模型类型:     ${mode_label}"
 echo "  类别列表:     ${categories}"
 if [ "$mode_choice" == "2" ]; then
@@ -88,11 +120,11 @@ for seed in "${seeds[@]}"; do
     session_num=$((session_num + 1))
 
     if [ "$mode_choice" == "2" ]; then
-        cmd_args="--categories \"${categories}\" --k_shot ${k_shot} --shot_seed ${seed}"
-        session_name="vis_k${k_shot}_s${seed}"
+        cmd_args="--categories \"${categories}\" --k_shot ${k_shot} --shot_seed ${seed} --dataset ${dataset}"
+        session_name="${dataset}_vis_k${k_shot}_s${seed}"
     else
-        cmd_args="--categories \"${categories}\""
-        session_name="vis_full_s${session_num}"
+        cmd_args="--categories \"${categories}\" --dataset ${dataset}"
+        session_name="${dataset}_vis_full_s${session_num}"
     fi
 
     if [[ "$include_inference" =~ ^[Nn] ]]; then

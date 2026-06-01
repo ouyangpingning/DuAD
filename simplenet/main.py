@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(_proj_root, "src"))
 sys.path.insert(0, _proj_root)
 
 from commen_import import *
-from dataset import get_mvtec_dataloader, get_transform
+from dataset_mvtec import get_mvtec_dataloader, get_transform
 from utils import setup_logger, set_seed, clean_GPU_Cache
 from simplenet.simplenet import SimpleNet, SimpleNetConfig
 from simplenet.config import load_config, build_simplenet_config, get_paths
@@ -24,10 +24,11 @@ def train_category(
     device: torch.device,
     k_shot: int = None,
     shot_seed: int = 0,
+    dataset_type: str = "mvtec",
 ) -> dict:
     config.device = str(device)
 
-    cat_log_dir = os.path.join(log_dir, atype)
+    cat_log_dir = os.path.join(log_dir, dataset_type, atype)
     os.makedirs(cat_log_dir, exist_ok=True)
     if k_shot is not None:
         log_name = f"{atype}_k{k_shot}_s{shot_seed}"
@@ -43,9 +44,9 @@ def train_category(
 
     set_seed(0)
 
-    # 数据增强（消融实验）：少样本时启用，与 DuAD 的增强策略对齐
+    # 数据增强（消融实验）：由 config.toml [augment] use_augment 总开关控制
     enable_augment = False
-    if k_shot is not None:
+    if config.use_augment:
         if config.augment_categories is None:
             enable_augment = True
         elif atype in config.augment_categories:
@@ -53,7 +54,7 @@ def train_category(
     logger.info(f"Image augmentation: {enable_augment}")
 
     enable_color_augment = False
-    if k_shot is not None:
+    if config.use_augment:
         if config.color_augment_categories is not None:
             enable_color_augment = atype in config.color_augment_categories
     logger.info(f"Color augmentation: {enable_color_augment}")
@@ -201,7 +202,7 @@ def main(categories, k_shot, shot_seed):
     config_path = os.path.join(os.path.dirname(__file__), "config.toml")
     cfg = load_config(config_path)
     paths = get_paths(cfg)
-    base_dir = paths["base_dir"]
+    base_dir = paths["mvtec_base_dir"]
     ckpt_dir = paths["ckpt_dir"]
     log_dir = paths["log_dir"]
     os.makedirs(ckpt_dir, exist_ok=True)

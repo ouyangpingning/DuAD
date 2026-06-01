@@ -3,6 +3,15 @@ import cv2
 import pandas as pd
 from skimage import measure
 
+
+def _safe_roc_auc(y_true, y_score):
+    """计算 AUROC，当 y_true 只有一个类别时返回默认值，避免 UndefinedMetricWarning。"""
+    classes = np.unique(np.asarray(y_true))
+    if len(classes) < 2:
+        return 0.5  # 单类时无法定义 AUROC，返回随机水平
+    return metrics.roc_auc_score(y_true, y_score)
+
+
 # 用于模型的评估
 def compute_imagewise_retrieval_metrics(
     anomaly_prediction_weights, anomaly_ground_truth_labels
@@ -19,7 +28,7 @@ def compute_imagewise_retrieval_metrics(
         anomaly_ground_truth_labels: [np.array or list] [N] Binary labels - 1
                                     if image is an anomaly, 0 if not.
     """
-    auroc = metrics.roc_auc_score(
+    auroc = _safe_roc_auc(
         anomaly_ground_truth_labels,  # 真实标签
         anomaly_prediction_weights # 预测得分
     )
@@ -110,7 +119,7 @@ def compute_pixelwise_retrieval_metrics(anomaly_segmentations, ground_truth_mask
     flat_anomaly_segmentations = anomaly_segmentations.ravel()
     flat_ground_truth_masks = ground_truth_masks.ravel()
 
-    auroc = metrics.roc_auc_score(
+    auroc = _safe_roc_auc(
         flat_ground_truth_masks.astype(int), flat_anomaly_segmentations
     )
     ap = metrics.average_precision_score(

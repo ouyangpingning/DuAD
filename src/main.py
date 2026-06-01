@@ -1,6 +1,7 @@
 # main代码全部进行重构
 from commen_import import *
-from dataset import get_mvtec_dataloader, get_transform
+from dataset_mvtec import get_mvtec_dataloader, get_transform
+from dataset_visa import get_visa_dataloader
 from myAD import DINOv2AnomalyDetector, ModelConfig
 from utils import setup_logger, set_seed, clean_GPU_Cache
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
@@ -19,6 +20,7 @@ def train_category(
     shot_seed: int = 0,
     category_pca_thresholds: dict = None,
     category_pca_border_thresholds: dict = None,
+    dataset_type: str = "mvtec",
 ) -> dict:
     """
     训练单个类别
@@ -30,7 +32,7 @@ def train_category(
     config.device = str(device)
 
     # 设置日志（按类别分目录，全样本/少样本不同 seed 独立命名）
-    cat_log_dir = os.path.join(log_dir, atype)
+    cat_log_dir = os.path.join(log_dir, dataset_type, atype)
     os.makedirs(cat_log_dir, exist_ok=True)
     if k_shot is not None:
         log_name = f"{atype}_k{k_shot}_s{shot_seed}"
@@ -77,18 +79,32 @@ def train_category(
         augment=enable_augment,
         color_augment=enable_color_augment,
     )
-    # 训练和测试数据加载器
-    train_loader, test_loader = get_mvtec_dataloader(
-        root_dir=base_dir, # 数据地址
-        Atype=atype,
-        train_transform=train_transform,
-        test_transform=test_transform,
-        gt_transform=gt_transform,
-        batch_size=config.batch_size,
-        num_workers=4,
-        k_shot=k_shot,
-        shot_seed=shot_seed,
-    )
+    # 训练和测试数据加载器（根据数据集类型选择）
+    if dataset_type == "visa":
+        train_loader, test_loader = get_visa_dataloader(
+            root_dir=base_dir,
+            category=atype,
+            csv_name="1cls",
+            train_transform=train_transform,
+            test_transform=test_transform,
+            gt_transform=gt_transform,
+            batch_size=config.batch_size,
+            num_workers=4,
+            k_shot=k_shot,
+            shot_seed=shot_seed,
+        )
+    else:
+        train_loader, test_loader = get_mvtec_dataloader(
+            root_dir=base_dir,
+            Atype=atype,
+            train_transform=train_transform,
+            test_transform=test_transform,
+            gt_transform=gt_transform,
+            batch_size=config.batch_size,
+            num_workers=4,
+            k_shot=k_shot,
+            shot_seed=shot_seed,
+        )
     
     # 初始化模型
     model = DINOv2AnomalyDetector(
@@ -227,8 +243,14 @@ def train_category(
     default=0,
     help='少样本采样时的随机种子，用于多seed取平均。例如 --shot_seed 42'
 )
-
-def main(categories, k_shot, shot_seed):
+@click.option(
+    '--dataset',
+    type=click.Choice(['mvtec', 'visa']),
+    default='mvtec',
+    show_default=True,
+    help='数据集选择: mvtec (MVTec AD) 或 visa (VisA)'
+)
+def main(categories, k_shot, shot_seed, dataset):
     """主函数"""
     # 将 click 返回的字符串按空格分割为列表
     categories = categories.strip().split()
@@ -244,15 +266,20 @@ def main(categories, k_shot, shot_seed):
     # 类别列表
     # all_categories = ["bottle" ,"cable" ,"capsule" ,"carpet" , "grid" , "hazelnut" , "leather", "metal_nut"  ,"pill", "screw" , "tile" , "toothbrush",  "transistor",  "wood",  "zipper"]
     print(f"本次训练类别: {categories}")
+    print(f"数据集: {dataset}")
     if k_shot is not None:
         print(f"少样本模式: K={k_shot}, seed={shot_seed}")
 
 
-    
+
     # 从 config.toml 加载统一参数
     cfg = load_config("config.toml")
     paths = get_paths(cfg)
-    base_dir = paths["base_dir"]
+    # 根据数据集类型选择对应的数据根目录
+    if dataset == "visa":
+        base_dir = paths.get("visa_base_dir", paths["mvtec_base_dir"])
+    else:
+        base_dir = paths["mvtec_base_dir"]
     ckpt_dir = paths["ckpt_dir"]
     log_dir = paths["log_dir"]
     dinov2_model_dir = paths["dinov2_model_dir"]
@@ -288,6 +315,7 @@ def main(categories, k_shot, shot_seed):
             shot_seed=shot_seed,
             category_pca_thresholds=category_pca_thresholds,
             category_pca_border_thresholds=category_pca_border_thresholds,
+            dataset_type=dataset,
         )
         
         all_results.append(result)

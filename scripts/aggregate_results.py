@@ -72,15 +72,29 @@ def discover_logs(log_dir: Path, pattern: str = "*_full.log") -> List[Path]:
     return sorted(log_dir.rglob(pattern))
 
 
-def group_results(results: List[dict]) -> Dict[Tuple[str, str], List[dict]]:
-    """将结果按 (category, mode) 分组，mode 为 'full' 或 'k{N}'。"""
+def extract_dataset(log_path: Path, log_dir: Path) -> str:
+    """从日志路径中提取数据集名称。
+
+    日志结构: {log_dir}/{dataset}/{category}/{category}_full.log
+    例如: model_log/mvtec/bottle/bottle_full.log → "mvtec"
+          model_log/visa/candle/candle_full.log  → "visa"
+    """
+    try:
+        rel = log_path.relative_to(log_dir)
+        return rel.parts[0]
+    except ValueError:
+        return "unknown"
+
+
+def group_results(results: List[dict]) -> Dict[Tuple[str, str, str], List[dict]]:
+    """将结果按 (dataset, category, mode) 分组，mode 为 'full' 或 'k{N}'。"""
     groups = defaultdict(list)
     for r in results:
         if r["k_shot"] is not None:
             mode = f"k{r['k_shot']}"
         else:
             mode = "full"
-        groups[(r["category"], mode)].append(r)
+        groups[(r.get("dataset", ""), r["category"], mode)].append(r)
     return groups
 
 
@@ -110,11 +124,12 @@ def compute_stats(vals: List[float]) -> Tuple[float, float, float, float]:
 # ─── 终端输出 ───────────────────────────────────────────────
 
 def print_table(groups: Dict):
-    """打印按类别分组的汇总表。"""
-    for (category, mode), items in sorted(groups.items()):
+    """打印按数据集+类别分组的汇总表。"""
+    for (dataset, category, mode), items in sorted(groups.items()):
         n = len(items)
+        label = f"{dataset}/{category}" if dataset else category
         print(f"\n{'─'*70}")
-        print(f"  {category}  [{mode}]  ({n} seed{'s' if n > 1 else ''})")
+        print(f"  {label}  [{mode}]  ({n} seed{'s' if n > 1 else ''})")
         print(f"{'─'*70}")
         header = f"  {'Metric':<16}"
         if n > 1:
@@ -146,7 +161,7 @@ def print_cross_category_avg(groups: Dict):
     print(f"{'='*70}")
 
     for mode in ("full", "k1", "k2", "k4", "k8"):
-        mode_items = [(cat, items) for (cat, m), items in groups.items() if m == mode]
+        mode_items = [(ds, cat, items) for (ds, cat, m), items in groups.items() if m == mode]
         if not mode_items:
             continue
         print(f"\n  Mode: {mode}")
@@ -155,7 +170,7 @@ def print_cross_category_avg(groups: Dict):
 
         for key, label in METRIC_NAMES:
             cat_means = []
-            for cat, items in mode_items:
+            for ds, cat, items in mode_items:
                 vals = [m.get(key) for m in items if m.get(key) is not None]
                 if vals:
                     cat_means.append(sum(vals) / len(vals))
@@ -167,40 +182,41 @@ def print_cross_category_avg(groups: Dict):
 
 
 def print_overview(groups: Dict):
-    """一行一个 category+mode 的总览。"""
+    """一行一个 dataset+category+mode 的总览。"""
     print(f"\n{'='*70}")
     print("  总览 (Overview)")
     print(f"{'='*70}")
-    for (category, mode), items in sorted(groups.items()):
+    for (dataset, category, mode), items in sorted(groups.items()):
         n = len(items)
+        label = f"{dataset}/{category}" if dataset else category
         img_vals = [m.get("image_auroc") for m in items if m.get("image_auroc") is not None]
         pix_vals = [m.get("pixel_auroc") for m in items if m.get("pixel_auroc") is not None]
         pro_vals = [m.get("pixel_pro") for m in items if m.get("pixel_pro") is not None]
         img_str = f"I-AUROC: {sum(img_vals)/len(img_vals):.4f}" if img_vals else ""
         pix_str = f"P-AUROC: {sum(pix_vals)/len(pix_vals):.4f}" if pix_vals else ""
         pro_str = f"PRO: {sum(pro_vals)/len(pro_vals):.4f}" if pro_vals else ""
-        print(f"  {category:<15} {mode:<6}  (n={n})  {img_str}  {pix_str}  {pro_str}")
+        print(f"  {label:<25} {mode:<6}  (n={n})  {img_str}  {pix_str}  {pro_str}")
 
 
 # ─── CSV 保存 ───────────────────────────────────────────────
 
 def save_csv_files(groups: Dict, output_dir: Path):
-    """将结果保存为两个 CSV 文件到 output_dir。"""
+    """将结果保存为三个 CSV 文件到 output_dir。"""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── per_category.csv ──
     per_cat_path = output_dir / "per_category.csv"
     with open(per_cat_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["category", "mode", "n_seeds", "metric", "mean", "std", "min", "max"])
-        for (category, mode), items in sorted(groups.items()):
+        writer.writerow(["dataset", "category", "mode", "n_seeds", "metric", "mean", "std", "min", "max"])
+        for (dataset, category, mode), items in sorted(groups.items()):
             n = len(items)
             for key, label in METRIC_NAMES:
                 vals = [m.get(key) for m in items if m.get(key) is not None]
                 if not vals:
                     continue
                 mean_v, std_v, min_v, max_v = compute_stats(vals)
-                writer.writerow([category, mode, n, label, f"{mean_v:.4f}", f"{std_v:.4f}", f"{min_v:.4f}", f"{max_v:.4f}"])
+                writer.writerow([dataset, category, mode, n, label, f"{mean_v:.4f}", f"{std_v:.4f}", f"{min_v:.4f}", f"{max_v:.4f}"])
 
     print(f"\n  已保存: {per_cat_path}")
 
@@ -208,37 +224,61 @@ def save_csv_files(groups: Dict, output_dir: Path):
     cross_path = output_dir / "cross_category_avg.csv"
     with open(cross_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["mode", "metric", "mean", "std"])
+        writer.writerow(["dataset", "mode", "metric", "mean", "std"])
         for mode in ("full", "k1", "k2", "k4", "k8"):
-            mode_items = [(cat, items) for (cat, m), items in groups.items() if m == mode]
+            mode_items = [(ds, cat, items) for (ds, cat, m), items in groups.items() if m == mode]
             if not mode_items:
                 continue
             for key, label in METRIC_NAMES:
-                cat_means = []
-                for cat, items in mode_items:
+                # 按数据集分组计算跨类别平均
+                ds_means: Dict[str, List[float]] = defaultdict(list)
+                for ds, cat, items in mode_items:
                     vals = [m.get(key) for m in items if m.get(key) is not None]
                     if vals:
-                        cat_means.append(sum(vals) / len(vals))
-                if cat_means:
-                    overall = sum(cat_means) / len(cat_means)
-                    var = sum((v - overall) ** 2 for v in cat_means) / len(cat_means)
-                    std = var ** 0.5
-                    writer.writerow([mode, label, f"{overall:.4f}", f"{std:.4f}"])
+                        ds_means[ds].append(sum(vals) / len(vals))
+                for ds, cat_means in sorted(ds_means.items()):
+                    if cat_means:
+                        overall = sum(cat_means) / len(cat_means)
+                        var = sum((v - overall) ** 2 for v in cat_means) / len(cat_means)
+                        std = var ** 0.5
+                        writer.writerow([ds, mode, label, f"{overall:.4f}", f"{std:.4f}"])
 
     print(f"  已保存: {cross_path}")
+
+    # ── details.csv ── 每个 dataset+category+mode+seed 的原始指标
+    detail_path = output_dir / "details.csv"
+    detail_headers = ["dataset", "category", "mode", "k_shot", "seed"] + [label for _, label in METRIC_NAMES]
+    with open(detail_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(detail_headers)
+        for (dataset, category, mode), items in sorted(groups.items()):
+            for m in sorted(items, key=lambda x: (x.get("seed") is None, x.get("seed", 0))):
+                row = [
+                    dataset,
+                    category,
+                    mode,
+                    m.get("k_shot", ""),
+                    m.get("seed", ""),
+                ]
+                for key, _ in METRIC_NAMES:
+                    val = m.get(key)
+                    row.append(f"{val:.4f}" if val is not None else "")
+                writer.writerow(row)
+
+    print(f"  已保存: {detail_path}")
 
 
 def print_csv_stdout(groups: Dict):
     """stdout 输出 CSV（兼容旧版 --csv 行为）。"""
-    print("category,mode,n_seeds,metric,mean,std,min,max")
-    for (category, mode), items in sorted(groups.items()):
+    print("dataset,category,mode,n_seeds,metric,mean,std,min,max")
+    for (dataset, category, mode), items in sorted(groups.items()):
         n = len(items)
         for key, label in METRIC_NAMES:
             vals = [m.get(key) for m in items if m.get(key) is not None]
             if not vals:
                 continue
             mean_v, std_v, min_v, max_v = compute_stats(vals)
-            print(f"{category},{mode},{n},{label},{mean_v:.4f},{std_v:.4f},{min_v:.4f},{max_v:.4f}")
+            print(f"{dataset},{category},{mode},{n},{label},{mean_v:.4f},{std_v:.4f},{min_v:.4f},{max_v:.4f}")
 
 
 # ─── 主入口 ─────────────────────────────────────────────────
@@ -268,6 +308,9 @@ def main():
     for f in log_files:
         parsed = parse_log(f)
         if parsed:
+            dataset = extract_dataset(f, log_dir)
+            for r in parsed:
+                r["dataset"] = dataset
             results.extend(parsed)
         else:
             print(f" 跳过 (无法解析): {f.name}")

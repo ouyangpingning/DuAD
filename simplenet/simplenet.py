@@ -79,6 +79,7 @@ class SimpleNetConfig:
     mix_noise: int = 1                # 噪声强度种类数
 
     # 数据增强控制（消融实验：少样本时启用，与 DuAD 对齐）
+    use_augment: bool = False           # 总开关：是否启用数据增强
     augment_categories: List[str] = None
     color_augment_categories: List[str] = None
 
@@ -394,6 +395,10 @@ class SimpleNet:
         return self.trainer.train_epoch(train_dataloader)
 
     def predict(self, test_dataloader) -> Tuple[List[float], List[np.ndarray], List, List]:
+        # 确保在 eval 模式，否则 BatchNorm1d 会用 batch 统计量而非 running 统计量
+        self.feature_extractor.eval()
+        self.projection.eval()
+        self.discriminator.eval()
         if self.predictor is None:
             self.predictor = SimpleNetPredictor(
                 self.feature_extractor,

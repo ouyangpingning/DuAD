@@ -1,6 +1,7 @@
 from commen_import import *
 from utils import clean_GPU_Cache, setup_logger
-from dataset import get_mvtec_dataloader, get_transform
+from dataset_mvtec import get_mvtec_dataloader, get_transform
+from dataset_visa import get_visa_dataloader
 from myAD import DINOv2AnomalyDetector, ModelConfig, Visualizer, PCAMaskGenerator
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
 from sklearn.decomposition import PCA
@@ -29,14 +30,22 @@ import click
     help='少样本采样种子，需与训练时一致。例如 --shot_seed 42'
 )
 @click.option(
+    '--dataset',
+    type=click.Choice(['mvtec', 'visa']),
+    default='mvtec',
+    show_default=True,
+    help='数据集选择: mvtec (MVTec AD) 或 visa (VisA)'
+)
+@click.option(
     '--skip_inference',
     is_flag=True,
     default=False,
     help='跳过模型推理和异常热力图可视化，仅生成 PCA掩模 / Perlin掩模 / 特征图 / 数据增强图'
 )
-def main(categories, k_shot, shot_seed, skip_inference):
+def main(categories, k_shot, shot_seed, dataset, skip_inference):
     categories = categories.strip().split()
     print(f"处理类别: {categories}")
+    print(f"数据集: {dataset}")
     if k_shot is not None:
         print(f"少样本模式: K={k_shot}, seed={shot_seed}")
     if skip_inference:
@@ -49,7 +58,11 @@ def main(categories, k_shot, shot_seed, skip_inference):
     paths = get_paths(cfg)
     category_pca_thresholds = get_category_pca_thresholds(cfg)
     category_pca_border_thresholds = get_category_pca_border_thresholds(cfg)
-    base_dir = paths["base_dir"]
+    # 根据数据集类型选择对应的数据根目录
+    if dataset == "visa":
+        base_dir = paths.get("visa_base_dir", paths["mvtec_base_dir"])
+    else:
+        base_dir = paths["mvtec_base_dir"]
     ckpt_dir = paths["ckpt_dir"]
     log_dir = paths["log_dir"]
     output_dir = paths["output_dir"]
@@ -66,7 +79,7 @@ def main(categories, k_shot, shot_seed, skip_inference):
 
         clean_GPU_Cache()
 
-        cat_log_dir = os.path.join(log_dir, current_atype)
+        cat_log_dir = os.path.join(log_dir, dataset, current_atype)
         os.makedirs(cat_log_dir, exist_ok=True)
         logger = setup_logger(current_atype, cat_log_dir, logging.DEBUG, log_console=False)
         logger.info(f"Processing category: {current_atype}")
@@ -86,17 +99,31 @@ def main(categories, k_shot, shot_seed, skip_inference):
             size=target_size, isize=target_size,
             augment=do_augment, color_augment=do_color_augment,
         )
-        train_transform_dataloader, test_transform_dataloader = get_mvtec_dataloader(
-            root_dir=base_dir,
-            Atype=current_atype,
-            train_transform=train_transform,
-            test_transform=test_transform,
-            gt_transform=gt_transform,
-            batch_size=batch_size,
-            num_workers=4,
-            k_shot=k_shot,
-            shot_seed=shot_seed,
-        )
+        if dataset == "visa":
+            train_transform_dataloader, test_transform_dataloader = get_visa_dataloader(
+                root_dir=base_dir,
+                category=current_atype,
+                csv_name="1cls",
+                train_transform=train_transform,
+                test_transform=test_transform,
+                gt_transform=gt_transform,
+                batch_size=batch_size,
+                num_workers=4,
+                k_shot=k_shot,
+                shot_seed=shot_seed,
+            )
+        else:
+            train_transform_dataloader, test_transform_dataloader = get_mvtec_dataloader(
+                root_dir=base_dir,
+                Atype=current_atype,
+                train_transform=train_transform,
+                test_transform=test_transform,
+                gt_transform=gt_transform,
+                batch_size=batch_size,
+                num_workers=4,
+                k_shot=k_shot,
+                shot_seed=shot_seed,
+            )
 
         # ---- 可视化数据增强效果（仅少样本模式） ----
         if do_augment or do_color_augment:
@@ -143,13 +170,14 @@ def main(categories, k_shot, shot_seed, skip_inference):
         )
         detector.set_category(current_atype)
 
-        # 预测并可视化所有测试样本
-        if os.path.exists(ckpt_path):
-            epoch, scores, _, _ = detector.load(ckpt_path)
-            logger.info(f"Loaded checkpoint from epoch {epoch}, scores: {scores}")
-        else:
-            logger.warning(f"Checkpoint not found: {ckpt_path}")
-            continue
+        # 加载 checkpoint（仅推理模式需要，skip_inference 时跳过）
+        if not skip_inference:
+            if os.path.exists(ckpt_path):
+                epoch, scores, _, _ = detector.load(ckpt_path)
+                logger.info(f"Loaded checkpoint from epoch {epoch}, scores: {scores}")
+            else:
+                logger.warning(f"Checkpoint not found: {ckpt_path}")
+                continue
 
         # 训练 PCA Student（每次按需训练）
         if config.use_pca_student:

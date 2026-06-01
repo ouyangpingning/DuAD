@@ -21,11 +21,13 @@ noise_std = 0.015              # 高斯噪声标准差
 mix_noise = 1                  # 噪声强度种类数 (1 = 单一强度)
 
 [paths]
-base_dir = "/root/siton-tmp/mvtec_anomaly_detection"
+mvtec_base_dir = "/root/siton-tmp/mvtec_anomaly_detection"
+visa_base_dir = "/root/siton-tmp/VisA"
 ckpt_dir = "./model_ckpt/simplenet"
 log_dir = "./model_log/simplenet"
 
 [augment]
+use_augment = true             # 是否启用数据增强（几何翻转+旋转），少样本训练时建议设为 true
 augment_categories = ["grid", "hazelnut", "screw"]  # 少样本时启用几何增强的类别
 color_augment_categories = ["toothbrush"]             # 少样本时启用颜色增强的类别
 

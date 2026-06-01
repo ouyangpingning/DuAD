@@ -31,7 +31,7 @@ def get_transform(size, isize, mean=None, std=None, augment=False, color_augment
         extra_aug = [
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
-            RandomRotationReplicate(degrees=50),
+            RandomRotationReplicate(degrees=180),
         ]
     else:
         extra_aug = []

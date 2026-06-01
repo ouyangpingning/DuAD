@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict
 from commen_import import *
-from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retrieval_metrics, _embed_legacy,init_weight,download_dinov2_models ,compute_pro
+from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retrieval_metrics, _embed_legacy,init_weight,download_dinov2_models ,compute_pro, _safe_roc_auc
 from sklearn.decomposition import PCA
 import cv2
 
@@ -1288,7 +1288,7 @@ class DINOv2AnomalyDetector:
                 ) # (83,1,1,1)
                 ranges = np.maximum(seg_maxs - seg_mins, 1e-2)
                 seg_norm = (seg_arr * (1.0 / ranges).sum() - (seg_mins / ranges).sum()) / len(segmentations)
-                pixel_auroc = metrics.roc_auc_score(
+                pixel_auroc = _safe_roc_auc(
                     np.array(masks_gt).ravel().astype(int), seg_norm.ravel()
                 )
                 return {'image_auroc': img_metrics['auroc'], 'pixel_auroc': pixel_auroc}

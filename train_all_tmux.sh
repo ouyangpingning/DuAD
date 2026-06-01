@@ -18,7 +18,7 @@ used_memory=3072 # mb per process
 
 # ==================== 交互式配置 ====================
 echo "================================================"
-echo "  MVTec AD 训练脚本 - 交互式配置"
+echo "  异常检测训练脚本 - 交互式配置"
 echo "================================================"
 echo ""
 
@@ -46,13 +46,33 @@ fi
 
 echo ""
 
-# --- 2. 类别选择 ---
-echo "可用的 MVTec AD 类别 (共15类):"
-echo "  bottle cable capsule carpet grid hazelnut leather metal_nut pill screw tile toothbrush transistor wood zipper"
+# --- 2. 数据集选择 ---
+echo "请选择数据集:"
+echo "  [1] MVTec AD (15类)"
+echo "  [2] VisA (12类)"
+read -p "输入选项 [1/2] (默认=1): " dataset_choice
+dataset_choice=${dataset_choice:-1}
+
+if [ "$dataset_choice" == "2" ]; then
+    dataset="visa"
+    default_cats="candle capsules cashew chewinggum fryum macaroni1 macaroni2 pcb1 pcb2 pcb3 pcb4 pipe_fryum"
+    cat_list_label="VisA 类别 (共12类)"
+else
+    dataset="mvtec"
+    default_cats="bottle cable capsule carpet grid hazelnut leather metal_nut pill screw tile toothbrush transistor wood zipper"
+    cat_list_label="MVTec AD 类别 (共15类)"
+fi
+extra_args="$extra_args --dataset ${dataset}"
+
 echo ""
-read -p "输入要训练的类别，空格分隔（回车=全部15类）: " categories_input
+
+# --- 3. 类别选择 ---
+echo "可用的 ${cat_list_label}:"
+echo "  ${default_cats}"
+echo ""
+read -p "输入要训练的类别，空格分隔（回车=全部）: " categories_input
 if [ -z "$categories_input" ]; then
-    categories=("bottle" "cable" "capsule" "carpet" "grid" "hazelnut" "leather" "metal_nut" "pill" "screw" "tile" "toothbrush" "transistor" "wood" "zipper")
+    categories=($default_cats)
 else
     categories=($categories_input)
 fi
@@ -65,6 +85,7 @@ echo "================================================"
 echo "  配置摘要"
 echo "================================================"
 echo "  训练模式:     ${mode_label}"
+echo "  数据集:       ${dataset}"
 echo "  类别数量:     ${num_categories}"
 echo "  类别列表:     ${categories[@]}"
 if [ "$mode_choice" == "2" ]; then
@@ -154,11 +175,11 @@ while [ $task_cursor -lt $total_tasks ]; do
 
     # 构建命令
     if [ "$mode_choice" == "2" ]; then
-        cmd_args="--categories \"${session_cats}\" --k_shot ${k_shot} --shot_seed ${current_seed}"
-        session_name="tr_k${k_shot}_s${current_seed}_g${session_num}"
+        cmd_args="--categories \"${session_cats}\" --k_shot ${k_shot} --shot_seed ${current_seed} --dataset ${dataset}"
+        session_name="${dataset}_k${k_shot}_s${current_seed}_g${session_num}"
     else
-        cmd_args="--categories \"${session_cats}\""
-        session_name="tr_g${session_num}"
+        cmd_args="--categories \"${session_cats}\" --dataset ${dataset}"
+        session_name="${dataset}_g${session_num}"
     fi
 
     echo "创建 tmux 会话: ${session_name}"
@@ -181,8 +202,8 @@ echo ""
 echo "完成！共创建 ${session_num} 个 tmux 会话"
 echo ""
 echo "会话命名规则:"
-echo "  全样本:   tr_g{N}"
-echo "  少样本:   tr_k{K}_s{seed}_g{N}"
+echo "  全样本:   {dataset}_g{N}"
+echo "  少样本:   {dataset}_k{K}_s{seed}_g{N}"
 echo ""
 echo "使用以下命令管理会话:"
 echo "  tmux attach -t <会话名>      # 进入指定会话"
