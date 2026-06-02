@@ -1,7 +1,6 @@
 # main代码全部进行重构
 from commen_import import *
-from dataset_mvtec import get_mvtec_dataloader, get_transform
-from dataset_visa import get_visa_dataloader
+from dataset import get_mvtec_dataloader, get_visa_dataloader, get_transform
 from myAD import DINOv2AnomalyDetector, ModelConfig
 from utils import setup_logger, set_seed, clean_GPU_Cache
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths

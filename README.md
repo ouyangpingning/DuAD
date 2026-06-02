@@ -52,7 +52,10 @@
     ├── visualize_feature.py     # 可视化 / 推理入口
     ├── export_onnx.py           # ONNX 模型导出（端到端）
     ├── myAD.py                  # 核心模型（ModelConfig / Trainer / Predictor / 组件）
-    ├── dataset.py               # MVTec AD 数据加载器
+    ├── dataset/                 # 数据集统一抽象层
+    │   ├── __init__.py          #   导出 get_mvtec_dataloader / get_visa_dataloader 等
+    │   ├── mvtec.py             #   MVTec AD 数据集加载
+    │   └── visa.py              #   VisA 数据集加载
     ├── utils.py                 # 评估指标、日志、特征聚合
     ├── perlin.py                # Perlin 噪声掩码生成
     ├── config.py                # TOML → ModelConfig 解析器

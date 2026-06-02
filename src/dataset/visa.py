@@ -1,5 +1,5 @@
 from commen_import import *
-from dataset_mvtec import get_transform, RandomRotationReplicate
+from .mvtec import get_transform, RandomRotationReplicate
 import pandas as pd
 
 
@@ -87,6 +87,9 @@ class VisADataset(Dataset):
         else:
             gt = Image.open(gt)
             gt = self.gt_transform(gt)
+            # VisA 掩模像素值为 1（异常）/ 0（背景），经 ToDtype(scale=True) 后变成 1/255 ≈ 0.004
+            # 需要二值化还原为 0/1，与 MVTec 掩模格式保持一致
+            gt = (gt > 0).float()
         assert img.size()[1:] == gt.size()[1:], \
             f"img size {img.size()[1:]} != gt size {gt.size()[1:]}"
         return img, gt, label, adtype

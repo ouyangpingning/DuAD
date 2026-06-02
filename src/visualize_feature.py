@@ -1,7 +1,6 @@
 from commen_import import *
 from utils import clean_GPU_Cache, setup_logger
-from dataset_mvtec import get_mvtec_dataloader, get_transform
-from dataset_visa import get_visa_dataloader
+from dataset import get_mvtec_dataloader, get_visa_dataloader, get_transform
 from myAD import DINOv2AnomalyDetector, ModelConfig, Visualizer, PCAMaskGenerator
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
 from sklearn.decomposition import PCA
@@ -258,6 +257,8 @@ class CategoryVisualizer:
             })
 
         # --- N×3 网格渲染 ---
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+
         n = len(results)
         fig, axes = plt.subplots(n, 3, figsize=(18, 6 * n))
         if n == 1:
@@ -278,13 +279,17 @@ class CategoryVisualizer:
             im = axes[i, 2].imshow(r['heatmap'], cmap='plasma', alpha=0.8)
             axes[i, 2].set_title(f'[{label_str}] Heatmap (plasma)', fontsize=11)
             axes[i, 2].axis('off')
-            plt.colorbar(im, ax=axes[i, 2], fraction=0.046, shrink=0.8)
+            # 用 make_axes_locatable 添加 colorbar，不挤占图像空间
+            divider = make_axes_locatable(axes[i, 2])
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
 
         plt.suptitle(
             f'{self.atype}{self.vis_suffix} — Anomaly Detection '
             f'({n_anomaly} anomalies + {n_normal} normals, random sample)',
             fontsize=15, fontweight='bold')
-        plt.tight_layout()
+        # rect=[0,0,1,0.96] 给 suptitle 留 4% 空间，避免与子图标题重叠
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
 
         save_path = f"{self.output_dir}/{self.atype}{self.vis_suffix}_heatmap.png"
         plt.savefig(save_path, dpi=200, bbox_inches='tight')

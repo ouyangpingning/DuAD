@@ -58,7 +58,9 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 |------|------|
 | `src/myAD.py` | Core: `ModelConfig`, `FeatureExtractor`, `PCAMaskGenerator`, `PCAStudent`, `Projection`, `Discriminator`, `Trainer`, `Predictor`, `DINOv2AnomalyDetector`, `Visualizer` |
 | `src/main.py` | Training entry point. Iterates categories, trains each, saves best checkpoint. Supports few-shot via `--k_shot` / `--shot_seed` |
-| `src/dataset.py` | MVTec AD dataset loader (`MvTecDataset`) + transforms. `get_mvtec_dataloader` supports `k_shot` subsampling |
+| `src/dataset/__init__.py` | Dataset abstraction layer — re-exports `get_mvtec_dataloader`, `get_visa_dataloader`, `get_transform`, etc. from submodules |
+| `src/dataset/mvtec.py` | MVTec AD dataset loader (`MvTecDataset`) + transforms + `get_mvtec_dataloader` with `k_shot` support |
+| `src/dataset/visa.py` | VisA dataset loader (`VisADataset`) + `get_visa_dataloader` with `k_shot` support |
 | `src/utils.py` | Metrics (AUROC, AP, F1, PRO), `_embed_legacy`, logger setup, DINOv2 loader |
 | `src/perlin.py` | Perlin noise mask generation |
 | `src/visualize_feature.py` | Inference/visualization entry point. Uses `CategoryVisualizer` class (Strategy + Template Method) to orchestrate 5 visualization types: anomaly heatmaps (random sampling, percentile norm, F1 threshold, plasma colormap, background NaN), PCA masks (SVD vs PCA Student), Perlin masks, DINOv2 feature maps, and data augmentation previews. Supports `--num_samples`, `--skip_inference` |
