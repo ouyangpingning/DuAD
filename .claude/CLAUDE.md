@@ -27,9 +27,11 @@ python src/main.py --categories "bottle screw" --k_shot 4 --shot_seed 42
 # Interactive batch training (choose full/few-shot, categories, K, seeds; auto-distributes tmux sessions by GPU memory)
 bash train_all_tmux.sh
 
-# Visualize anomaly masks (loads best checkpoints, outputs to ./outputs/)
+# Visualize anomaly heatmaps (loads best checkpoints, outputs to ./outputs/)
 python src/visualize_feature.py --categories "bottle screw"
 python src/visualize_feature.py --categories "bottle screw" --k_shot 4 --shot_seed 0
+python src/visualize_feature.py --categories "bottle screw" --num_samples 8
+python src/visualize_feature.py --categories "bottle" --skip_inference  # analysis-only, no .pth needed
 
 # Interactive batch visualization
 bash visualize_all_tmux.sh
@@ -59,7 +61,7 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 | `src/dataset.py` | MVTec AD dataset loader (`MvTecDataset`) + transforms. `get_mvtec_dataloader` supports `k_shot` subsampling |
 | `src/utils.py` | Metrics (AUROC, AP, F1, PRO), `_embed_legacy`, logger setup, DINOv2 loader |
 | `src/perlin.py` | Perlin noise mask generation |
-| `src/visualize_feature.py` | Inference/visualization entry point. Loads best checkpoints, generates anomaly heatmaps, PCA masks, Perlin masks, and feature activation maps |
+| `src/visualize_feature.py` | Inference/visualization entry point. Uses `CategoryVisualizer` class (Strategy + Template Method) to orchestrate 5 visualization types: anomaly heatmaps (random sampling, percentile norm, F1 threshold, plasma colormap, background NaN), PCA masks (SVD vs PCA Student), Perlin masks, DINOv2 feature maps, and data augmentation previews. Supports `--num_samples`, `--skip_inference` |
 | `src/export_onnx.py` | ONNX model export for deployment inference (no PyTorch dependency needed) |
 | `src/config.py` | Config loader — reads `config.toml`, builds `ModelConfig`, extracts PCA thresholds and paths |
 | `src/commen_import.py` | All shared third-party imports; other modules use `from commen_import import *` (deliberately misspelled, do not rename) |
@@ -78,8 +80,10 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 
 **Inference**: `Predictor.predict()`:
   1. Extract features → PCA mask → Projection → Discriminator negative score
-  2. Background patches filled with min score → upscale to target_size → Gaussian blur (sigma=4)
+  2. Background patches filled with min score (for evaluation only) → upscale → Gaussian blur (sigma=4)
   3. Image-level: max aggregation over patch scores. Cross-normalization ensemble for evaluation
+
+**Visualization** (`CategoryVisualizer`): differs from training inference — uses random sampling, percentile normalization, F1-threshold filtering, and background NaN masking for clean overlay.
 
 ## Key architectural components
 
@@ -95,6 +99,8 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 - Checkpoints: `./model_ckpt/{category}/{category}_best_ckpt.pth` (full) or `{category}_k{K}_s{seed}_best_ckpt.pth` (few-shot)
 - Logs: `./model_log/{category}/{category}_full.log` (full) or `{category}_k{K}_s{seed}_full.log` (few-shot)
 - ONNX models: `./model_onnx/{category}_k{K}_s{seed}_full.onnx`
+- Visual outputs: `./outputs/{category}_heatmap.png` (anomaly N×3 grid), `pca_mask/`, `perlin_mask/`, `feature_map/`, `augmented/`
+- Docs: `docs/visualize_feature.md` (complete visualization tool reference)
 - `Trainer` applies `proj_lr * 0.1` to the actual AdamW optimizer
 
 ## Few-shot support

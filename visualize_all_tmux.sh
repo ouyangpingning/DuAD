@@ -59,6 +59,16 @@ include_inference=${include_inference:-Y}
 
 echo ""
 
+# --- 1.6 样本数量设置 ---
+if [[ ! "$include_inference" =~ ^[Nn] ]]; then
+    read -p "随机抽取样本数（默认=4）: " num_samples
+    num_samples=${num_samples:-4}
+else
+    num_samples=""
+fi
+
+echo ""
+
 # --- 2. 数据集选择 ---
 echo "请选择数据集:"
 echo "  [1] MVTec AD (15类)"
@@ -97,6 +107,9 @@ echo "================================================"
 echo "  配置摘要"
 echo "================================================"
 echo "  推理可视化:   $([[ "$include_inference" =~ ^[Nn] ]] && echo '跳过' || echo '包含')"
+if [[ ! "$include_inference" =~ ^[Nn] ]]; then
+    echo "  抽取样本数:   ${num_samples}"
+fi
 echo "  数据集:       ${dataset}"
 echo "  模型类型:     ${mode_label}"
 echo "  类别列表:     ${categories}"
@@ -129,6 +142,8 @@ for seed in "${seeds[@]}"; do
 
     if [[ "$include_inference" =~ ^[Nn] ]]; then
         cmd_args="${cmd_args} --skip_inference"
+    else
+        cmd_args="${cmd_args} --num_samples ${num_samples}"
     fi
 
     echo "创建 tmux 会话: ${session_name}"
@@ -154,7 +169,7 @@ echo "完成！共创建 ${session_num} 个 tmux 会话"
 echo ""
 echo "输出目录: ${work_path}/outputs/"
 if [[ ! "$include_inference" =~ ^[Nn] ]]; then
-    echo "  - {category}_test.png           异常热力图"
+    echo "  - {category}_heatmap.png       异常热力图 (N×3 网格, 随机抽取)"
 fi
 echo "  - pca_mask/{category}_pca_mask.png   PCA掩模 (SVD + MLP 对比)"
 echo "  - perlin_mask/{category}_perlin_mask.png  Perlin掩模"

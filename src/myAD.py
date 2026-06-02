@@ -1178,6 +1178,13 @@ class DINOv2AnomalyDetector:
             self.logger.warning("PCA Student requires PCA mask (use_pca_mask=True). Skipping.")
             return
 
+        if self.config.pca_skip_categories and self.current_category in self.config.pca_skip_categories:
+            self.logger.info(
+                f"Category '{self.current_category}' is in skip_categories. "
+                f"Skipping PCA Student training (not needed, mask is always all-ones)."
+            )
+            return
+
         if self.trainer is None:
             self.trainer = Trainer(
                 self.feature_extractor, self.projection,

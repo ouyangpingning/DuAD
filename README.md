@@ -40,8 +40,10 @@
 ├── outputs/                     # 可视化 / 实验输出
 ├── results/                     # 汇总 CSV 输出
 ├── docs/
-│   ├── ONNX_export_report.md    # ONNX 导出详细报告
-│   └── pca_student.md           # PCA Student 设计与训练流程
+│   ├── ONNX_export_report.md       # ONNX 导出详细报告
+│   ├── pca_student.md              # PCA Student 设计与训练流程
+│   ├── pca_mask_tuning.md          # PCA 掩模阈值调参指南
+│   └── visualize_feature.md        # 可视化工具完整说明
 ├── scripts/
 │   └── aggregate_results.py     # 日志汇总统计脚本
 ├── facebookresearch_dinov2_main/  # DINOv2 本地源码（torch.hub 加载）
@@ -102,11 +104,17 @@ bash train_all_tmux.sh
 ### 可视化
 
 ```bash
-# 命令行调用
+# 命令行调用（默认随机抽取 4 张测试图）
 python src/visualize_feature.py --categories "bottle screw"
 
 # 少样本模型
 python src/visualize_feature.py --categories "bottle" --k_shot 4 --shot_seed 42
+
+# 抽取 8 张测试样本
+python src/visualize_feature.py --categories "bottle screw" --num_samples 8
+
+# 仅分析模式（跳过推理，无需 .pth 文件，仅生成 PCA/Perlin/特征图）
+python src/visualize_feature.py --categories "bottle" --skip_inference
 
 # 交互式批量（多 seed 并行）
 bash visualize_all_tmux.sh
@@ -235,11 +243,13 @@ bash export_onnx_all_tmux.sh
 
 | 路径 | 内容 |
 |------|------|
-| `{category}_test.png` | 测试样本异常热力图 |
+| `{category}_heatmap.png` | N×3 网格：原图 + GT Mask + 热力叠加（plasma, 随机抽取） |
 | `augmented/{category}_augmented.png` | 数据增强效果（少样本） |
-| `pca_mask/{category}_pca_mask.png` | PCA 前景掩模 |
+| `pca_mask/{category}_pca_mask.png` | PCA 前景掩模 (SVD vs PCA Student 对比) |
 | `perlin_mask/{category}_perlin_mask.png` | Perlin 掩模叠加 |
 | `feature_map/{category}_feature_map.png` | DINOv2 特征激活热力图 |
+
+详细说明见 [`docs/visualize_feature.md`](docs/visualize_feature.md)。
 
 ## 结果汇总
 
