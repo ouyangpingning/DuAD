@@ -39,11 +39,6 @@
 │   └── ...
 ├── outputs/                     # 可视化 / 实验输出
 ├── results/                     # 汇总 CSV 输出
-├── docs/
-│   ├── ONNX_export_report.md       # ONNX 导出详细报告
-│   ├── pca_student.md              # PCA Student 设计与训练流程
-│   ├── pca_mask_tuning.md          # PCA 掩模阈值调参指南
-│   └── visualize_feature.md        # 可视化工具完整说明
 ├── facebookresearch_dinov2_main/  # DINOv2 本地源码（torch.hub 加载）
 └── src/
     ├── main.py                  # 训练入口
@@ -209,8 +204,6 @@ bash export_onnx_all_tmux.sh
 
 **PCA Student 模式**会在导出时自动训练 PCA Student MLP（~1 分钟），内嵌到 ONNX 模型中，实现单次 DINOv2 前向的端到端推理，PCA mask 生成比 SVD 快 ~1200×。
 
-详细说明见 [`docs/ONNX_export_report.md`](docs/ONNX_export_report.md) 和 [`docs/pca_student.md`](docs/pca_student.md)。
-
 ## 训练流程
 
 ```
@@ -250,8 +243,6 @@ bash export_onnx_all_tmux.sh
 | `pca_mask/{category}_pca_mask.png` | PCA 前景掩模 (SVD vs PCA Student 对比) |
 | `perlin_mask/{category}_perlin_mask.png` | Perlin 掩模叠加 |
 | `feature_map/{category}_feature_map.png` | DINOv2 特征激活热力图 |
-
-详细说明见 [`docs/visualize_feature.md`](docs/visualize_feature.md)。
 
 ## 结果汇总
 

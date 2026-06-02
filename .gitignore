@@ -1,4 +1,5 @@
 .claude/
+docs/
 model_ckpt/
 model_log/
 src/CLAUDE.md
