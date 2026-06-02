@@ -1,6 +1,6 @@
 from commen_import import *
 from utils import clean_GPU_Cache, setup_logger
-from dataset import get_mvtec_dataloader, get_visa_dataloader, get_transform
+from dataset import get_dataloader, get_transform
 from myAD import DINOv2AnomalyDetector, ModelConfig, Visualizer, PCAMaskGenerator
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
 from sklearn.decomposition import PCA
@@ -731,31 +731,19 @@ def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples):
             size=config.target_size, isize=config.target_size,
             augment=do_augment, color_augment=do_color_augment,
         )
-        if dataset == "visa":
-            train_loader, test_loader = get_visa_dataloader(
-                root_dir=base_dir,
-                category=current_atype,
-                csv_name="1cls",
-                train_transform=train_transform,
-                test_transform=test_transform,
-                gt_transform=gt_transform,
-                batch_size=config.batch_size,
-                num_workers=4,
-                k_shot=k_shot,
-                shot_seed=shot_seed,
-            )
-        else:
-            train_loader, test_loader = get_mvtec_dataloader(
-                root_dir=base_dir,
-                Atype=current_atype,
-                train_transform=train_transform,
-                test_transform=test_transform,
-                gt_transform=gt_transform,
-                batch_size=config.batch_size,
-                num_workers=4,
-                k_shot=k_shot,
-                shot_seed=shot_seed,
-            )
+        # DataLoader（Facade 统一入口）
+        train_loader, test_loader = get_dataloader(
+            root_dir=base_dir,
+            category=current_atype,
+            dataset_type=dataset,
+            train_transform=train_transform,
+            test_transform=test_transform,
+            gt_transform=gt_transform,
+            batch_size=config.batch_size,
+            num_workers=4,
+            k_shot=k_shot,
+            shot_seed=shot_seed,
+        )
 
         # 检测器
         detector = DINOv2AnomalyDetector(

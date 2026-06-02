@@ -36,7 +36,7 @@ import torch.nn.functional as F
 
 from myAD import DINOv2AnomalyDetector, ModelConfig
 from config import load_config, build_model_config
-from dataset import get_mvtec_dataloader, get_transform
+from dataset import get_dataloader, get_transform
 
 
 # ─── 卷积核生成 ────────────────────────────────────────────────────
@@ -433,9 +433,10 @@ def main():
             size=target_size, isize=target_size,
             augment=False, color_augment=False,
         )
-        train_loader, _ = get_mvtec_dataloader(
+        train_loader, _ = get_dataloader(
             root_dir=cfg["paths"]["mvtec_base_dir"],
-            Atype=category,
+            category=category,
+            dataset_type="mvtec",
             train_transform=train_transform,
             test_transform=train_transform,
             gt_transform=train_transform,

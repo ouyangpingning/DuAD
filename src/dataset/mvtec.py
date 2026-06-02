@@ -132,7 +132,7 @@ class MvTecDataset(Dataset):
     
 
 def get_mvtec_dataloader(root_dir:str = "/run/media/lxb/Soft/repository/remote-repository/data/mvtec_anomaly_detection",
-                         Atype:str="bottle",
+                         category:str="bottle",
                          train_transform=None,
                          test_transform=None,
                          gt_transform=None,
@@ -142,7 +142,7 @@ def get_mvtec_dataloader(root_dir:str = "/run/media/lxb/Soft/repository/remote-r
                          shot_seed: int = 0):
     """
         root_dir: mvtec数据集的根目录 \n
-        Atype: mvtec数据集的类别 \n
+        category: mvtec数据集的类别 \n
         data_transform: 数据增强 \n
         gt_transform: 掩码增强 \n
         batch_size: 批量大小 \n
@@ -159,14 +159,14 @@ def get_mvtec_dataloader(root_dir:str = "/run/media/lxb/Soft/repository/remote-r
 
     # 正常样本的dataset
     MvTec_nomal = MvTecDataset(
-        f"{root_dir}/{Atype}",
+        f"{root_dir}/{category}",
         train_transform_,
         gt_transform_,
         "train",
     )
     # 异常样本的dataset
     MvTec_anomal = MvTecDataset(
-        f"{root_dir}/{Atype}",
+        f"{root_dir}/{category}",
         test_transform_,
         gt_transform_,
         "test",

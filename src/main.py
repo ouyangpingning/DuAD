@@ -1,6 +1,6 @@
 # main代码全部进行重构
 from commen_import import *
-from dataset import get_mvtec_dataloader, get_visa_dataloader, get_transform
+from dataset import get_dataloader, get_transform
 from myAD import DINOv2AnomalyDetector, ModelConfig
 from utils import setup_logger, set_seed, clean_GPU_Cache
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
@@ -78,32 +78,19 @@ def train_category(
         augment=enable_augment,
         color_augment=enable_color_augment,
     )
-    # 训练和测试数据加载器（根据数据集类型选择）
-    if dataset_type == "visa":
-        train_loader, test_loader = get_visa_dataloader(
-            root_dir=base_dir,
-            category=atype,
-            csv_name="1cls",
-            train_transform=train_transform,
-            test_transform=test_transform,
-            gt_transform=gt_transform,
-            batch_size=config.batch_size,
-            num_workers=4,
-            k_shot=k_shot,
-            shot_seed=shot_seed,
-        )
-    else:
-        train_loader, test_loader = get_mvtec_dataloader(
-            root_dir=base_dir,
-            Atype=atype,
-            train_transform=train_transform,
-            test_transform=test_transform,
-            gt_transform=gt_transform,
-            batch_size=config.batch_size,
-            num_workers=4,
-            k_shot=k_shot,
-            shot_seed=shot_seed,
-        )
+    # 训练和测试数据加载器（Facade 统一入口）
+    train_loader, test_loader = get_dataloader(
+        root_dir=base_dir,
+        category=atype,
+        dataset_type=dataset_type,
+        train_transform=train_transform,
+        test_transform=test_transform,
+        gt_transform=gt_transform,
+        batch_size=config.batch_size,
+        num_workers=4,
+        k_shot=k_shot,
+        shot_seed=shot_seed,
+    )
     
     # 初始化模型
     model = DINOv2AnomalyDetector(

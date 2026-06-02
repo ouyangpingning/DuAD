@@ -58,7 +58,7 @@ Unsupervised anomaly detection on MVTec AD using frozen DINOv2 (`dinov2_vits14_r
 |------|------|
 | `src/myAD.py` | Core: `ModelConfig`, `FeatureExtractor`, `PCAMaskGenerator`, `PCAStudent`, `Projection`, `Discriminator`, `Trainer`, `Predictor`, `DINOv2AnomalyDetector`, `Visualizer` |
 | `src/main.py` | Training entry point. Iterates categories, trains each, saves best checkpoint. Supports few-shot via `--k_shot` / `--shot_seed` |
-| `src/dataset/__init__.py` | Dataset abstraction layer — re-exports `get_mvtec_dataloader`, `get_visa_dataloader`, `get_transform`, etc. from submodules |
+| `src/dataset/__init__.py` | Dataset abstraction layer (Facade). Exports `get_dataloader(root_dir, category, dataset_type, ...)` — unified entry dispatching to mvtec/visa submodules via `_LOADER_MAP`. Also re-exports `get_transform`, `get_mvtec_dataloader`, `get_visa_dataloader` for direct access |
 | `src/dataset/mvtec.py` | MVTec AD dataset loader (`MvTecDataset`) + transforms + `get_mvtec_dataloader` with `k_shot` support |
 | `src/dataset/visa.py` | VisA dataset loader (`VisADataset`) + `get_visa_dataloader` with `k_shot` support |
 | `src/utils.py` | Metrics (AUROC, AP, F1, PRO), `_embed_legacy`, logger setup, DINOv2 loader |
