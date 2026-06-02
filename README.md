@@ -58,6 +58,18 @@
 
 ## 快速开始
 
+### 克隆项目（含子模块）
+
+```bash
+git clone --recurse-submodules git@github.com:ouyangpingning/DuAD.git
+```
+
+如果已克隆但缺少 `facebookresearch_dinov2_main/`：
+
+```bash
+git submodule init && git submodule update
+```
+
 ### 环境安装
 
 ```bash
