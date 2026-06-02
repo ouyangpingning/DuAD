@@ -44,13 +44,12 @@
 │   ├── pca_student.md              # PCA Student 设计与训练流程
 │   ├── pca_mask_tuning.md          # PCA 掩模阈值调参指南
 │   └── visualize_feature.md        # 可视化工具完整说明
-├── scripts/
-│   └── aggregate_results.py     # 日志汇总统计脚本
 ├── facebookresearch_dinov2_main/  # DINOv2 本地源码（torch.hub 加载）
 └── src/
     ├── main.py                  # 训练入口
     ├── visualize_feature.py     # 可视化 / 推理入口
     ├── export_onnx.py           # ONNX 模型导出（端到端）
+    ├── aggregate_results.py     # 日志汇总统计脚本
     ├── myAD.py                  # 核心模型（ModelConfig / Trainer / Predictor / 组件）
     ├── dataset/                 # 数据集统一抽象层
     │   ├── __init__.py          #   导出 get_mvtec_dataloader / get_visa_dataloader 等
@@ -141,9 +140,9 @@ python src/export_onnx.py --category bottle --pca_mode student --verify
 bash aggregate_results.sh
 
 # 或直接调用 Python 脚本
-python scripts/aggregate_results.py                     # 默认日志目录
-python scripts/aggregate_results.py /path/to/logs       # 指定日志目录
-python scripts/aggregate_results.py --csv               # CSV 格式输出
+python src/aggregate_results.py                     # 默认日志目录
+python src/aggregate_results.py /path/to/logs       # 指定日志目录
+python src/aggregate_results.py --csv               # CSV 格式输出
 ```
 
 ## 核心特性
@@ -256,7 +255,7 @@ bash export_onnx_all_tmux.sh
 
 ## 结果汇总
 
-`scripts/aggregate_results.py` 递归扫描 `model_log/` 子目录下所有日志，自动解析：
+`src/aggregate_results.py` 递归扫描 `model_log/` 子目录下所有日志，自动解析：
 
 - 按 (类别, k_shot) 分组统计均值 ± 标准差
 - 跨类别平均汇总
@@ -296,7 +295,7 @@ bash export_onnx_all_tmux.sh
 bash train_all_tmux.sh  # 选择少样本模式，种子输入 "0 42 123 666 2024"
 
 # 训练完成后汇总
-python scripts/aggregate_results.py
+python src/aggregate_results.py
 ```
 
 ### 添加新类别

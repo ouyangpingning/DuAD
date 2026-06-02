@@ -41,8 +41,8 @@ python src/export_onnx.py --category bottle
 python src/export_onnx.py --category bottle --k_shot 2 --shot_seed 0 --verify
 
 # Aggregate results from logs
-python scripts/aggregate_results.py
-python scripts/aggregate_results.py --csv
+python src/aggregate_results.py
+python src/aggregate_results.py --csv
 
 # Install dependencies
 pip install -r requirements.txt

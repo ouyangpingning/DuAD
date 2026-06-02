@@ -38,9 +38,9 @@ echo ""
 cd "$work_path"
 
 if [ "$out_choice" == "2" ]; then
-    python scripts/aggregate_results.py "$log_arg" --csv
+    python src/aggregate_results.py "$log_arg" --csv
 else
-    python scripts/aggregate_results.py "$log_arg"
+    python src/aggregate_results.py "$log_arg"
 fi
 
 echo ""
