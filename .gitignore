@@ -2,8 +2,10 @@
 docs/
 model_ckpt/
 model_log/
+model_onnx/
 src/CLAUDE.md
 outputs/
+results/
 __pycache__/
 *.pyc
 *.pyo
