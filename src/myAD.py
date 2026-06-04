@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict
 from commen_import import *
-from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retrieval_metrics, _embed_legacy,init_weight,download_dinov2_models ,compute_pro, _safe_roc_auc
+from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retrieval_metrics, _embed_legacy, init_weight, download_dinov2_models, _safe_roc_auc
 from sklearn.decomposition import PCA
 import cv2
 
@@ -24,7 +24,6 @@ class ModelConfig:
     
     # 噪声参数
     noise_std: float = 0.5
-    dsc_margin: float = 0.5
     # 噪声退火参数
     use_noise_annealing: bool = True       # 是否启用噪声强度随epoch退火
     noise_std_max: float = 0.8             # 初始最大噪声强度
@@ -407,12 +406,12 @@ class PCAStudent(torch.nn.Module):
 # 投影器————将特征维度进行修改
 class Projection(torch.nn.Module):
     """
-    投影器--mlp构成
-    Linear(1536, 1536) → LeakyReLU(0.2) → Linear(1536, 1536)
+    投影器--纯线性 MLP 构成
+    Linear(1536, 1536) → Linear(1536, 1536)
     """
-    def __init__(self, in_planes, out_planes=None, n_layers=1, layer_type=0):
+    def __init__(self, in_planes, out_planes=None, n_layers=1):
         super(Projection, self).__init__()
-        
+
         if out_planes is None:
             out_planes = in_planes
         self.layers = torch.nn.Sequential()
@@ -420,12 +419,8 @@ class Projection(torch.nn.Module):
         _out = None
         for i in range(n_layers):
             _in = in_planes if i == 0 else _out
-            _out = out_planes 
+            _out = out_planes
             self.layers.add_module(f"{i}fc", torch.nn.Linear(_in, _out))
-            if i < n_layers - 1:
-                # 多层投影时，中间层默认添加 LeakyReLU 激活，增强非线性表达能力
-                if layer_type > 1:
-                    self.layers.add_module(f"{i}relu", torch.nn.LeakyReLU(0.2))
         self.apply(init_weight)
     
     def forward(self, x):
@@ -1119,7 +1114,6 @@ class DINOv2AnomalyDetector:
         self.projection = Projection(
             in_planes= self.config.input_planes, # 特征维度,
             n_layers=2,
-            layer_type=0
         ).to(self.config.device) # cuda
         # 判别器的输入维度也是特征维度，输出是1维异常分数
         self.discriminator = Discriminator(
@@ -1244,19 +1238,10 @@ class DINOv2AnomalyDetector:
         self.logger.info(f"Checkpoint saved to {path}")
 
     def load(self, path: str):
-        """加载模型权重（兼容新旧 checkpoint 格式）。"""
+        """加载模型权重，清空 Trainer/Predictor 使其使用新权重重建"""
         state = torch.load(path, map_location=self.config.device)
-
-        # 兼容旧格式: {trainer_state: {proj_state, dsc_state, ...}}
-        if 'trainer_state' in state:
-            proj_state = state['trainer_state']['proj_state']
-            dsc_state = state['trainer_state']['dsc_state']
-        else:
-            proj_state = state['proj_state']
-            dsc_state = state['dsc_state']
-
-        self.projection.load_state_dict(proj_state)
-        self.discriminator.load_state_dict(dsc_state)
+        self.projection.load_state_dict(state['proj_state'])
+        self.discriminator.load_state_dict(state['dsc_state'])
         self.trainer = None
         self.predictor = None
         self.logger.info(f"Checkpoint loaded from {path}")
@@ -1355,57 +1340,6 @@ class DINOv2AnomalyDetector:
 
 class Visualizer:
     """独立的可视化工具类"""
-    
-    @staticmethod
-    def visualize_masks(
-        masks: List[np.ndarray],
-        scores: Optional[List[float]] = None,
-        threshold: Optional[float] = None,
-        save_path: Optional[str] = None
-    ):
-        """可视化异常掩码"""
-        import matplotlib.pyplot as plt
-        
-        n = len(masks)
-        cols = min(8, n)
-        rows = math.ceil(n / cols)
-        
-        fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 4*rows))
-        if rows == 1:
-            axes = axes.reshape(1, -1)
-        
-        global_min = min(m.min() for m in masks)
-        global_max = max(m.max() for m in masks)
-        
-        for i, mask in enumerate(masks):
-            row, col = i // cols, i % cols
-            ax = axes[row, col]
-            
-            im = ax.imshow(mask, cmap='jet', vmin=global_min, vmax=global_max)
-            
-            title = f'Sample {i}'
-            if scores:
-                title += f'\nScore: {scores[i]:.3f}'
-            ax.set_title(title, fontsize=10)
-            
-            if threshold: 
-                ax.contour(mask, levels=[threshold], colors='lime', linewidths=2)
-            
-            plt.colorbar(im, ax=ax, fraction=0.046)
-            ax.axis('off')
-        
-        # 隐藏多余的子图
-        for i in range(n, rows * cols):
-            axes[i // cols, i % cols].axis('off')
-        
-        plt.tight_layout()
-        
-        if save_path:
-            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close()
-        else:
-            plt.show()
 
     @staticmethod
     def visualize_pca_mask(

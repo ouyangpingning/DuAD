@@ -32,7 +32,6 @@ def build_model_config(cfg: dict, device: str = "cuda") -> ModelConfig:
         meta_epochs=train["meta_epochs"],
         gan_epochs=train["gan_epochs"],
         batch_size=train["batch_size"],
-        dsc_margin=train["dsc_margin"],
         proj_lr=train["proj_lr"],
         dsc_lr=train["dsc_lr"],
         noise_std=noise["noise_std"],
