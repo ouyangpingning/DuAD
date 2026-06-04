@@ -1,7 +1,7 @@
 from commen_import import *
 from utils import clean_GPU_Cache, setup_logger
 from dataset import get_dataloader, get_transform
-from myAD import DINOv2AnomalyDetector, ModelConfig, Visualizer, PCAMaskGenerator
+from myAD import DINOv2AnomalyDetector, ModelConfig, PCAMaskGenerator
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
 from sklearn.decomposition import PCA
 import cv2
@@ -249,12 +249,6 @@ class CategoryVisualizer:
             # 反归一化原图
             img_np = self._denormalize(sample_img[0])
 
-            # skip 类别：用亮度屏蔽暗色背景（PCA 对纹理类返回全 1，不做此处理则热力铺满背景）
-            if (self.config.pca_skip_categories
-                    and self.atype in self.config.pca_skip_categories):
-                bg_intensity = img_np.mean(axis=-1)
-                heatmap[bg_intensity < 0.05] = np.nan
-
             results.append({
                 'img_np': img_np,
                 'gt_mask': sample_gt_mask,
@@ -433,12 +427,12 @@ class CategoryVisualizer:
                 dpi=200, bbox_inches='tight')
             plt.close()
         else:
-            Visualizer.visualize_pca_mask(
+            self._visualize_pca_mask_fallback(
                 image=img_np,
                 mask=svd_mask_up,
                 first_pc=first_pc_up,
                 save_path=f"{self.output_dir}/pca_mask/"
-                         f"{self.atype}{self.vis_suffix}_pca_mask.png"
+                         f"{self.atype}{self.vis_suffix}_pca_mask.png",
             )
 
         self.logger.info(
@@ -576,6 +570,38 @@ class CategoryVisualizer:
     # =====================================================================
     # 模板方法：按固定顺序执行所有可视化
     # =====================================================================
+
+    @staticmethod
+    def _visualize_pca_mask_fallback(image, mask, first_pc, save_path=None):
+        """无 PCA Student 时的 3 列 PCA 掩模回退可视化"""
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+        axes[0].imshow(image)
+        axes[0].set_title('原图')
+        axes[0].axis('off')
+
+        im = axes[1].imshow(first_pc, cmap='viridis')
+        axes[1].set_title('第一主成分')
+        axes[1].axis('off')
+        divider = make_axes_locatable(axes[1])
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+
+        axes[2].imshow(image)
+        overlay = np.zeros((*mask.shape, 4))
+        overlay[mask > 0.5] = [1, 0, 0, 0.3]
+        axes[2].imshow(overlay)
+        axes[2].set_title('PCA掩模')
+        axes[2].axis('off')
+
+        plt.tight_layout()
+        if save_path:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+            plt.savefig(save_path, dpi=300)
+            plt.close()
+        else:
+            plt.show()
 
     def run_all(self):
         """依次执行当前类别的所有可视化（模板方法）。"""
