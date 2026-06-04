@@ -249,6 +249,12 @@ class CategoryVisualizer:
             # 反归一化原图
             img_np = self._denormalize(sample_img[0])
 
+            # skip 类别：用亮度屏蔽暗色背景（PCA 对纹理类返回全 1，不做此处理则热力铺满背景）
+            if (self.config.pca_skip_categories
+                    and self.atype in self.config.pca_skip_categories):
+                bg_intensity = img_np.mean(axis=-1)
+                heatmap[bg_intensity < 0.05] = np.nan
+
             results.append({
                 'img_np': img_np,
                 'gt_mask': sample_gt_mask,
