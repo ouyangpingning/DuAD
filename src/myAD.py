@@ -111,11 +111,7 @@ class FeatureExtractor(torch.nn.Module):
         patches_features: [B*H*W, C] 聚合后的特征
         """
         # 提取多层特征
-        layer_features = extract_layer_features(
-            self.encoder,
-            images,
-            layer_indices=self.layer_indices
-        )  # List of [B, C, H, W]
+        layer_features = self._extract_layer_features(images)
 
         B, C, H, W = layer_features[0].shape
 
@@ -132,58 +128,16 @@ class FeatureExtractor(torch.nn.Module):
         )  # [B*H*W, C]
 
         return patches_features, (H, W)
-    
-def extract_layer_features(model, image_tensor, layer_indices=[4, 8, 12]):
-    """
-    提取指定层的特征
-    
-    Args:
-        model: DINOv2 模型
-        image_tensor: 输入图像张量 (B, C, H, W)，已预处理
-        layer_indices: 要提取的层索引列表(dinov2_small 共12层,索引 0-11)
-    
-    Returns:
-        特征列表，每个元素是 patch_features 的元组,放置的所有样本的layer层的patch特征[n_layer,patch_features,pathc_dim]
-    """
-    with torch.no_grad():
-        # 获取中间层特征
-        features = model.get_intermediate_layers(
-            image_tensor,
-            n=layer_indices,           # 指定层索引列表
-            reshape=True,              # 将特征重塑为空间格式 (B, D, H', W')
-            return_class_token=False    # 不返回 class token
-        )
-    
-    # features 是列表，每个元素对应一个层：(patch_tokens, cls_token)
-    # patch_tokens: (B, D, H', W')  - 空间特征图
-    # cls_token: (B, D)             - 全局特征向量
-    return features
 
-# PCA掩模类别 - GPU版本 (参考AnomalyDINO实现)
-def compute_first_pc_svd(features: torch.Tensor) -> torch.Tensor:
-    """
-    通过 SVD 计算第一主成分投影值 (独立函数，供 PCA Student 训练使用)
-
-    Args:
-        features: [N, C] torch 张量
-    Returns:
-        [N] 第一主成分投影值
-    """
-    mean = features.mean(dim=0, keepdim=True)
-    features_centered = features - mean
-
-    try:
-        U, S, Vh = torch.linalg.svd(features_centered, full_matrices=False)
-        first_component = Vh[0, :]
-        first_pc = features_centered @ first_component
-    except RuntimeError:
-        features_np = features.cpu().numpy()
-        pca = PCA(n_components=1, svd_solver='randomized')
-        first_pc_np = pca.fit_transform(features_np).squeeze()
-        first_pc = torch.from_numpy(first_pc_np).to(features.device)
-
-    return first_pc
-
+    def _extract_layer_features(self, image_tensor):
+        """提取 DINOv2 指定中间层的特征 (List of [B, C, H, W])"""
+        with torch.no_grad():
+            return self.encoder.get_intermediate_layers(
+                image_tensor,
+                n=self.layer_indices,
+                reshape=True,
+                return_class_token=False,
+            )
 
 class PCAMaskGenerator:
     """
@@ -332,8 +286,23 @@ class PCAMaskGenerator:
             with torch.no_grad():
                 return torch.sigmoid(self.pca_student(features).squeeze(-1))
 
-        return compute_first_pc_svd(features)
-    
+        return self._compute_first_pc_svd(features)
+
+    @staticmethod
+    def _compute_first_pc_svd(features: torch.Tensor) -> torch.Tensor:
+        """通过 SVD 计算第一主成分投影值"""
+        mean = features.mean(dim=0, keepdim=True)
+        features_centered = features - mean
+        try:
+            U, S, Vh = torch.linalg.svd(features_centered, full_matrices=False)
+            first_component = Vh[0, :]
+            return features_centered @ first_component
+        except RuntimeError:
+            features_np = features.cpu().numpy()
+            pca = PCA(n_components=1, svd_solver='randomized')
+            first_pc_np = pca.fit_transform(features_np).squeeze()
+            return torch.from_numpy(first_pc_np).to(features.device)
+
     def _morphological_process(self, mask_2d: np.ndarray) -> np.ndarray:
         """
         形态学后处理 - 使用OpenCV
