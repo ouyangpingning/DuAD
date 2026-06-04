@@ -1244,10 +1244,19 @@ class DINOv2AnomalyDetector:
         self.logger.info(f"Checkpoint saved to {path}")
 
     def load(self, path: str):
-        """加载模型权重，清空 Trainer/Predictor 使其使用新权重重建"""
+        """加载模型权重（兼容新旧 checkpoint 格式）。"""
         state = torch.load(path, map_location=self.config.device)
-        self.projection.load_state_dict(state['proj_state'])
-        self.discriminator.load_state_dict(state['dsc_state'])
+
+        # 兼容旧格式: {trainer_state: {proj_state, dsc_state, ...}}
+        if 'trainer_state' in state:
+            proj_state = state['trainer_state']['proj_state']
+            dsc_state = state['trainer_state']['dsc_state']
+        else:
+            proj_state = state['proj_state']
+            dsc_state = state['dsc_state']
+
+        self.projection.load_state_dict(proj_state)
+        self.discriminator.load_state_dict(dsc_state)
         self.trainer = None
         self.predictor = None
         self.logger.info(f"Checkpoint loaded from {path}")
