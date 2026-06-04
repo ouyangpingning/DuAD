@@ -1,7 +1,7 @@
 from commen_import import *
 from utils import clean_GPU_Cache, setup_logger
 from dataset import get_dataloader, get_transform
-from myAD import DINOv2AnomalyDetector, ModelConfig, PCAMaskGenerator
+from myAD import DINOv2AnomalyDetector, ModelConfig, PCAMaskGenerator, PerlinMaskGenerator
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
 from sklearn.decomposition import PCA
 import cv2
@@ -460,7 +460,6 @@ class CategoryVisualizer:
             pca_data: visualize_pca_mask() 的返回值
         """
         os.makedirs(f"{self.output_dir}/perlin_mask/", exist_ok=True)
-        from perlin import perlin_mask
 
         svd_mask = pca_data['svd_mask']
         svd_mask_up = pca_data['svd_mask_up']
@@ -470,6 +469,11 @@ class CategoryVisualizer:
         img_np = pca_data['img_np']
         target_size = self.config.target_size
 
+        perlin_gen = PerlinMaskGenerator(
+            min_scale=self.config.perlin_min,
+            max_scale=self.config.perlin_max,
+        )
+
         with torch.no_grad():
             pca_mask_img = F.interpolate(
                 svd_mask.reshape(1, 1, H, W).float(),
@@ -478,13 +482,10 @@ class CategoryVisualizer:
             ).squeeze().cpu().numpy()
 
             try:
-                perlin_s = perlin_mask(
+                perlin_s = perlin_gen(
                     img_shape=(sample_image.shape[1], target_size, target_size),
                     feat_size=H,
-                    min=self.config.perlin_min,
-                    max=self.config.perlin_max,
                     mask_fg=pca_mask_img,
-                    flag=0
                 )
                 perlin_2d = perlin_s
                 perlin_up = cv2.resize(

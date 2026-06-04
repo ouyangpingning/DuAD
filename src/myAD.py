@@ -3,6 +3,7 @@ from typing import Optional, List, Tuple, Dict
 from commen_import import *
 from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retrieval_metrics, _embed_legacy, init_weight, download_dinov2_models, _safe_roc_auc
 from sklearn.decomposition import PCA
+import scipy.ndimage as ndimage
 import cv2
 
 @dataclass
@@ -344,6 +345,93 @@ class PCAMaskGenerator:
         return features[mask.to(device)]
 
 
+class PerlinMaskGenerator:
+    """Perlin 噪声掩模生成器 — 在图像上生成多尺度随机 Perlin 噪声掩模"""
+
+    def __init__(self, min_scale: int = 0, max_scale: int = 4):
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+
+    def __call__(self, img_shape, feat_size, mask_fg):
+        """生成 Perlin 噪声二值掩模
+
+        Args:
+            img_shape: (C, H_img, W_img)   图像张量形状
+            feat_size: int                  特征图尺寸 (H_feat == W_feat)
+            mask_fg: np.ndarray [H_img, W_img]   前景约束 (0/1 或 float)
+        Returns:
+            np.ndarray [feat_size, feat_size]     Perlin 噪声掩模
+        """
+        mask = np.zeros((feat_size, feat_size))
+        while np.max(mask) == 0:
+            thr1 = self._generate_thr(img_shape)
+            thr2 = self._generate_thr(img_shape)
+            temp = torch.rand(1).numpy()[0]
+            if temp > 2 / 3:
+                perlin_thr = thr1 + thr2
+                perlin_thr = np.where(perlin_thr > 0, np.ones_like(perlin_thr),
+                                      np.zeros_like(perlin_thr))
+            elif temp > 1 / 3:
+                perlin_thr = thr1 * thr2
+            else:
+                perlin_thr = thr1
+            perlin_thr = torch.from_numpy(perlin_thr) * mask_fg
+            down_y = int(img_shape[1] / feat_size)
+            down_x = int(img_shape[2] / feat_size)
+            mask = (F.max_pool2d(
+                perlin_thr.unsqueeze(0).unsqueeze(0),
+                (down_y, down_x)).float().numpy()[0, 0])
+        return mask
+
+    def _generate_thr(self, img_shape):
+        """单层 Perlin 噪声 + 旋转 + 阈值二值化"""
+        perlin_scalex = 2 ** np.random.randint(self.min_scale, self.max_scale)
+        perlin_scaley = 2 ** np.random.randint(self.min_scale, self.max_scale)
+        perlin_noise = self._rand_perlin_2d_np(
+            (img_shape[1], img_shape[2]),
+            (perlin_scalex, perlin_scaley))
+        angle = np.random.uniform(-90, 90)
+        perlin_noise = ndimage.rotate(perlin_noise, angle, reshape=False, order=1)
+        return np.where(perlin_noise > 0.5, np.ones_like(perlin_noise),
+                        np.zeros_like(perlin_noise))
+
+    @staticmethod
+    def _rand_perlin_2d_np(shape, res,
+                           fade=lambda t: 6 * t ** 5 - 15 * t ** 4 + 10 * t ** 3):
+        """2D Perlin 噪声 numpy 实现"""
+        delta = (res[0] / shape[0], res[1] / shape[1])
+        d = (math.ceil(shape[0] / res[0]), math.ceil(shape[1] / res[1]))
+        grid = np.mgrid[0:res[0]:delta[0], 0:res[1]:delta[1]].transpose(1, 2, 0) % 1
+
+        angles = 2 * math.pi * np.random.rand(res[0] + 1, res[1] + 1)
+        gradients = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
+
+        def tile_grads(sl1, sl2):
+            return np.repeat(np.repeat(
+                gradients[sl1[0]:sl1[1], sl2[0]:sl2[1]], d[0], axis=0), d[1], axis=1)
+
+        def dot(grad, shift):
+            return (np.stack(
+                (grid[:shape[0], :shape[1], 0] + shift[0],
+                 grid[:shape[0], :shape[1], 1] + shift[1]),
+                axis=-1) * grad[:shape[0], :shape[1]]).sum(axis=-1)
+
+        n00 = dot(tile_grads([0, -1], [0, -1]), [0, 0])
+        n10 = dot(tile_grads([1, None], [0, -1]), [-1, 0])
+        n01 = dot(tile_grads([0, -1], [1, None]), [0, -1])
+        n11 = dot(tile_grads([1, None], [1, None]), [-1, -1])
+        t = fade(grid[:shape[0], :shape[1]])
+        return (math.sqrt(2) *
+                PerlinMaskGenerator._lerp_np(
+                    PerlinMaskGenerator._lerp_np(n00, n10, t[..., 0]),
+                    PerlinMaskGenerator._lerp_np(n01, n11, t[..., 0]),
+                    t[..., 1]))
+
+    @staticmethod
+    def _lerp_np(x, y, w):
+        return (y - x) * w + x
+
+
 class PCAStudent(torch.nn.Module):
     """
     PCA Student — MLP 从 DINOv2 特征预测二值前景掩模
@@ -553,35 +641,39 @@ class Trainer:
         return float(max(current, min_std))
     
     def _generate_perlin_masks(
-        self, 
-        images: torch.Tensor, 
-        H: int, 
-        W: int, 
+        self,
+        images: torch.Tensor,
+        H: int,
+        W: int,
         pca_mask: torch.Tensor
     ) -> torch.Tensor:
         """
         为batch中的每个图像生成Perlin掩码，在PCA前景掩码基础上进一步限制噪声区域
-        
+
         通过形态学腐蚀（erode）将PCA掩模向内收缩，使Perlin噪声更靠近前景中心，
         避免PCA边缘不精确时噪声覆盖到背景区域。
-        
+
         Args:
             images: [B, C, target_size, target_size]
             H, W: 特征网格尺寸
             pca_mask: [B*H*W] bool tensor (PCA前景掩码)
-            
+
         Returns:
             perlin_mask: [B*H*W] bool tensor
         """
-        from perlin import perlin_mask
-        
         B = images.shape[0]
         target_size = images.shape[2]
         device = pca_mask.device
-        
+
+        if not hasattr(self, '_perlin_gen'):
+            self._perlin_gen = PerlinMaskGenerator(
+                min_scale=self.config.perlin_min,
+                max_scale=self.config.perlin_max,
+            )
+
         # 重塑PCA掩码为 [B, H, W]
         pca_mask_2d = pca_mask.reshape(B, H, W).float()
-        
+
         all_masks = []
         for i in range(B):
             # 上采样PCA掩码到图像分辨率
@@ -590,40 +682,37 @@ class Trainer:
                 size=(target_size, target_size),
                 mode='nearest'
             ).squeeze()  # [target_size, target_size]
-            
+
             pca_mask_np = pca_mask_img.cpu().numpy().astype(np.uint8)
-            
+
             # 如果该图像没有前景，直接返回全零掩码
             if pca_mask_np.sum() == 0:
                 perlin_flat = np.zeros(H * W, dtype=bool)
                 all_masks.append(torch.from_numpy(perlin_flat))
                 continue
-            
+
             # 用腐蚀（erode）收缩PCA掩模，让Perlin区域更靠近前景中心
             kernel = np.ones((5, 5), np.uint8)
             pca_mask_eroded = cv2.erode(pca_mask_np, kernel, iterations=2)
-            
+
             # 如果腐蚀后前景没了，回退到原始PCA掩模
             if pca_mask_eroded.sum() == 0:
                 pca_mask_eroded = pca_mask_np
-            
+
             # 生成Perlin掩码
             try:
-                perlin_s = perlin_mask(
+                perlin_s = self._perlin_gen(
                     img_shape=(images.shape[1], target_size, target_size),
                     feat_size=H,
-                    min=self.config.perlin_min,
-                    max=self.config.perlin_max,
                     mask_fg=pca_mask_eroded.astype(np.float32),
-                    flag=0
                 )
                 perlin_flat = (perlin_s > 0).flatten()
             except Exception as e:
                 self.logger.warning(f"Perlin mask generation failed for image {i}: {e}")
                 perlin_flat = np.ones(H * W, dtype=bool)
-            
+
             all_masks.append(torch.from_numpy(perlin_flat))
-        
+
         return torch.cat(all_masks).to(device)
 
     def _log_tensor_stats(self, name: str, tensor: torch.Tensor):
