@@ -40,11 +40,11 @@ class ModelConfig:
     pca_use_gpu: bool = True           # 是否使用GPU加速PCA
     pca_skip_categories: List[str] = None  # 指定不使用PCA的类别列表（返回全1掩模）
 
-    # 数据增强控制
-    augment_categories: List[str] = None  # 指定使用图像级数据增强的类别列表（少样本模式下生效）
-
-    # 颜色数据增强控制（解决 toothbrush 等多颜色类别的少样本颜色偏差问题）
-    color_augment_categories: List[str] = None  # 指定使用颜色增强的类别列表，如 ["toothbrush"]
+    # 数据增强控制 — 4 种独立增强，可按类别分别指定
+    flip_categories: List[str] = None            # 启用随机翻转的类别
+    rotate_categories: List[str] = None          # 启用随机旋转的类别
+    translate_categories: List[str] = None       # 启用随机平移的类别
+    color_jitter_categories: List[str] = None    # 启用颜色抖动的类别
 
     # Perlin掩模参数
     use_perlin_mask: bool = False      # 是否使用Perlin掩模在PCA基础上进一步限制噪声位置

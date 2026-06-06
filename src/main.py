@@ -55,28 +55,28 @@ def train_category(
     # 设置训练随机种子
     set_seed(0)
     
-    # 获取数据增强器（少样本时启用随机翻转、旋转）
-    # augment_categories 控制哪些类别启用图像级增强，None 表示全部启用
-    enable_augment = False
-    if k_shot is not None:
-        if config.augment_categories is None:
-            enable_augment = True
-        elif atype in config.augment_categories:
-            enable_augment = True
-    logger.info(f"Image augmentation: {enable_augment}")
+    # 获取数据增强器 — 4 种独立增强，少样本时按类别启用
+    def _enabled(cat_list):
+        if k_shot is None:
+            return False
+        if cat_list is None:
+            return False
+        return atype in cat_list
 
-    # 颜色数据增强（用于 toothbrush 等多颜色类别，解决少样本颜色偏差）
-    enable_color_augment = False
-    if k_shot is not None:
-        if config.color_augment_categories is not None:
-            enable_color_augment = atype in config.color_augment_categories
-    logger.info(f"Color augmentation: {enable_color_augment}")
+    enable_flip = _enabled(config.flip_categories)
+    enable_rotate = _enabled(config.rotate_categories)
+    enable_translate = _enabled(config.translate_categories)
+    enable_color_jitter = _enabled(config.color_jitter_categories)
+    logger.info(f"Augmentation: flip={enable_flip}, rotate={enable_rotate}, "
+                f"translate={enable_translate}, color_jitter={enable_color_jitter}")
 
     train_transform, test_transform, gt_transform = get_transform(
         size=config.target_size,
         isize=config.target_size,
-        augment=enable_augment,
-        color_augment=enable_color_augment,
+        flip=enable_flip,
+        rotate=enable_rotate,
+        translate=enable_translate,
+        color_jitter=enable_color_jitter,
     )
     # 训练和测试数据加载器（Facade 统一入口）
     train_loader, test_loader = get_dataloader(

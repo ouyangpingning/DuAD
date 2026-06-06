@@ -8,7 +8,7 @@
 4. 调用方统一使用 from dataset import get_dataloader
 """
 
-from .mvtec import get_mvtec_dataloader, get_transform, RandomRotationReplicate, MvTecDataset
+from .mvtec import get_mvtec_dataloader, get_transform, RandomRotationReplicate, RandomTranslationReplicate, MvTecDataset
 from .visa import get_visa_dataloader, VisADataset
 
 

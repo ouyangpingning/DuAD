@@ -22,23 +22,53 @@ class RandomRotationReplicate:
         return torch.from_numpy(np.ascontiguousarray(rotated)).permute(2, 0, 1)
 
 
+class RandomTranslationReplicate:
+    """随机平移变换（上下/左右），使用 OpenCV BORDER_REPLICATE 避免黑边。"""
+
+    def __init__(self, max_shift_ratio: float = 0.1):
+        self.max_shift_ratio = max_shift_ratio
+
+    def __call__(self, img):
+        # img: torch tensor (C, H, W), uint8 [0, 255]
+        img_np = img.permute(1, 2, 0).cpu().numpy()
+        h, w = img_np.shape[:2]
+        max_dx = int(w * self.max_shift_ratio)
+        max_dy = int(h * self.max_shift_ratio)
+        dx = np.random.randint(-max_dx, max_dx + 1)
+        dy = np.random.randint(-max_dy, max_dy + 1)
+        M = np.float32([[1, 0, dx], [0, 1, dy]])
+        shifted = cv2.warpAffine(img_np, M, (w, h),
+                                 flags=cv2.INTER_LINEAR,
+                                 borderMode=cv2.BORDER_REPLICATE)
+        return torch.from_numpy(np.ascontiguousarray(shifted)).permute(2, 0, 1)
+
+
 # 数据增强
-def get_transform(size, isize, mean=None, std=None, augment=False, color_augment=False):
+def get_transform(size, isize, mean=None, std=None,
+                  flip=False, rotate=False, translate=False, color_jitter=False):
+    """返回 (train, test, gt) 三组 transform。
+
+    四个独立的数据增强标志，可按类别单独启用：
+        flip:          随机水平/垂直翻转
+        rotate:        随机旋转 ±180°（BORDER_REPLICATE）
+        translate:     随机平移 ±10%（BORDER_REPLICATE）
+        color_jitter:  颜色抖动（hue=0.3）
+    """
     mean_train = [0.485, 0.456, 0.406] if mean is None else mean
     std_train = [0.229, 0.224, 0.225] if std is None else std
 
-    if augment:
-        extra_aug = [
+    extra_aug = []
+    if color_jitter:
+        extra_aug.append(v2.ColorJitter(hue=0.3))
+    if flip:
+        extra_aug.extend([
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
-            RandomRotationReplicate(degrees=180),
-        ]
-    else:
-        extra_aug = []
-
-    # 颜色增强：解决多颜色类别（如 toothbrush）少样本时的颜色偏差问题
-    if color_augment:
-        extra_aug = [v2.ColorJitter(hue=0.3)] + extra_aug
+        ])
+    if rotate:
+        extra_aug.append(RandomRotationReplicate(degrees=180))
+    if translate:
+        extra_aug.append(RandomTranslationReplicate(max_shift_ratio=0.1))
 
     train_transforms = v2.Compose(
         [

@@ -1,5 +1,5 @@
 from commen_import import *
-from .mvtec import get_transform, RandomRotationReplicate
+from .mvtec import get_transform
 import pandas as pd
 
 

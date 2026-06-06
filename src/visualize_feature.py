@@ -32,8 +32,10 @@ class CategoryVisualizer:
         output_dir: str,
         logger,
         *,
-        do_augment: bool = False,
-        do_color_augment: bool = False,
+        do_flip: bool = False,
+        do_rotate: bool = False,
+        do_translate: bool = False,
+        do_color_jitter: bool = False,
         k_shot: int = None,
         num_samples: int = 4,
         skip_inference: bool = False,
@@ -47,8 +49,10 @@ class CategoryVisualizer:
         self.device = device
         self.output_dir = output_dir
         self.logger = logger
-        self.do_augment = do_augment
-        self.do_color_augment = do_color_augment
+        self.do_flip = do_flip
+        self.do_rotate = do_rotate
+        self.do_translate = do_translate
+        self.do_color_jitter = do_color_jitter
         self.k_shot = k_shot
         self.num_samples = num_samples
         self.skip_inference = skip_inference
@@ -609,7 +613,7 @@ class CategoryVisualizer:
         self._setup_chinese_font()
 
         # 1. 数据增强图（仅少样本模式）
-        if self.do_augment or self.do_color_augment:
+        if self.do_flip or self.do_rotate or self.do_translate or self.do_color_jitter:
             self.logger.info("Visualizing augmented training images...")
             self.visualize_augmented()
 
@@ -747,22 +751,26 @@ def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples):
                 f"Category-specific PCA border threshold for {current_atype}: "
                 f"{config.pca_border}")
 
-        # 数据增强控制
-        do_augment = (
-            k_shot is not None
-            and (config.augment_categories is None
-                 or current_atype in config.augment_categories))
-        do_color_augment = (
-            k_shot is not None
-            and config.color_augment_categories is not None
-            and current_atype in config.color_augment_categories)
-        logger.info(f"Image augmentation: {do_augment}")
-        logger.info(f"Color augmentation: {do_color_augment}")
+        # 数据增强控制 — 4 种独立增强
+        def _enabled(cat_list):
+            if k_shot is None:
+                return False
+            if cat_list is None:
+                return False
+            return current_atype in cat_list
+
+        do_flip = _enabled(config.flip_categories)
+        do_rotate = _enabled(config.rotate_categories)
+        do_translate = _enabled(config.translate_categories)
+        do_color_jitter = _enabled(config.color_jitter_categories)
+        logger.info(f"Augmentation: flip={do_flip}, rotate={do_rotate}, "
+                    f"translate={do_translate}, color_jitter={do_color_jitter}")
 
         # DataLoader
         train_transform, test_transform, gt_transform = get_transform(
             size=config.target_size, isize=config.target_size,
-            augment=do_augment, color_augment=do_color_augment,
+            flip=do_flip, rotate=do_rotate,
+            translate=do_translate, color_jitter=do_color_jitter,
         )
         # DataLoader（Facade 统一入口）
         train_loader, test_loader = get_dataloader(
@@ -813,8 +821,10 @@ def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples):
             device=device,
             output_dir=output_dir,
             logger=logger,
-            do_augment=do_augment,
-            do_color_augment=do_color_augment,
+            do_flip=do_flip,
+            do_rotate=do_rotate,
+            do_translate=do_translate,
+            do_color_jitter=do_color_jitter,
             k_shot=k_shot,
             num_samples=num_samples,
             skip_inference=skip_inference,

@@ -45,8 +45,11 @@ epochs = 100                       # PCA Student 训练轮数
 batch_size = 1369                 # 训练时的 mini-batch 大小（patch 级别）
 
 [augment]
-augment_categories = ["grid", "hazelnut", "screw"] # 类别特定的增强覆盖，通常选择旋转和翻转等几何增强适合的类别进行增强，以提高模型对几何变化的鲁棒性
-color_augment_categories = ["toothbrush"] # 类别特定的颜色增强覆盖，通常选择那些颜色特征较弱的类别进行颜色增强，以提高模型对颜色变化的鲁棒性
+# 四种独立数据增强，可按类别分别指定（少样本模式下生效）
+flip_categories = ["grid", "hazelnut", "screw"]     # 随机水平/垂直翻转
+rotate_categories = ["grid", "hazelnut", "screw"]   # 随机旋转 ±180°
+translate_categories = []                             # 随机平移 ±10%
+color_jitter_categories = ["toothbrush"]              # 颜色抖动
 
 # 类别特定的 PCA 阈值覆盖
 [category_pca.threshold]  # 为每个类别设置不同的 PCA 阈值，较高的值会使掩码更严格，突出更显著的特征，但过高可能会丢失重要信息
