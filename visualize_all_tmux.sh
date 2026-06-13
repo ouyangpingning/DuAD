@@ -149,12 +149,12 @@ for seed in "${seeds[@]}"; do
     echo "创建 tmux 会话: ${session_name}"
     echo "  种子: ${seed}"
     echo "  类别: ${categories}"
-    echo "  命令: python src/visualize_feature.py ${cmd_args}"
+    echo "  命令: python src/viz/visualize_feature.py ${cmd_args}"
 
     tmux new -d -s "$session_name"
     tmux send-keys -t "$session_name" "cd $work_path" C-m
     tmux send-keys -t "$session_name" "conda activate $work_env" C-m
-    tmux send-keys -t "$session_name" "python src/visualize_feature.py ${cmd_args}" C-m
+    tmux send-keys -t "$session_name" "python src/viz/visualize_feature.py ${cmd_args}" C-m
 
     echo "  会话 ${session_name} 已创建并启动"
     echo ""

@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from commen_import import *
 from utils import clean_GPU_Cache, setup_logger
 from dataset import get_dataloader, get_transform

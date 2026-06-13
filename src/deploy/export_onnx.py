@@ -11,13 +11,13 @@ ONNX 模型导出脚本
 
 用法:
     # SVD 模式 (默认)
-    python src/export_onnx.py --category bottle
+    python src/deploy/export_onnx.py --category bottle
 
     # PCA Student 模式 (自动训练 + 导出)
-    python src/export_onnx.py --category bottle --pca_mode student --verify
+    python src/deploy/export_onnx.py --category bottle --pca_mode student --verify
 
     # 少样本 + Student
-    python src/export_onnx.py --category bottle --k_shot 4 --shot_seed 0 --pca_mode student --verify
+    python src/deploy/export_onnx.py --category bottle --k_shot 4 --shot_seed 0 --pca_mode student --verify
 
 输出:
     SVD 模式:   ./model_onnx/{category}_full.onnx
@@ -28,7 +28,11 @@ ONNX 模型导出脚本
 
 import argparse
 import logging
+import sys
 from pathlib import Path
+
+# 让 src/deploy/ 下的模块能导入 src/ 同级模块
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import torch

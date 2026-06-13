@@ -47,9 +47,9 @@ bash train_all_tmux.sh
 ### Visualize
 
 ```bash
-python src/visualize_feature.py --categories "bottle screw"
-python src/visualize_feature.py --categories "bottle" --num_samples 8
-python src/visualize_feature.py --categories "bottle" --skip_inference
+python src/viz/visualize_feature.py --categories "bottle screw"
+python src/viz/visualize_feature.py --categories "bottle" --num_samples 8
+python src/viz/visualize_feature.py --categories "bottle" --skip_inference
 
 # Interactive batch visualization (tmux)
 bash visualize_all_tmux.sh
@@ -58,8 +58,8 @@ bash visualize_all_tmux.sh
 ### Export ONNX
 
 ```bash
-python src/export_onnx.py --category bottle
-python src/export_onnx.py --category bottle --pca_mode student --verify
+python src/deploy/export_onnx.py --category bottle
+python src/deploy/export_onnx.py --category bottle --pca_mode student --verify
 
 bash export_onnx_all_tmux.sh
 ```
@@ -68,8 +68,8 @@ bash export_onnx_all_tmux.sh
 
 ```bash
 bash aggregate_results.sh
-python src/aggregate_results.py
-python src/aggregate_results.py --csv
+python src/analysis/aggregate_results.py
+python src/analysis/aggregate_results.py --csv
 ```
 
 ## Project Structure
@@ -85,9 +85,12 @@ python src/aggregate_results.py --csv
 ├── .gitmodules                      # Git submodule config
 ├── src/
 │   ├── main.py                      # Training entry point
-│   ├── visualize_feature.py         # Visualization entry point
-│   ├── export_onnx.py               # ONNX model export
-│   ├── aggregate_results.py         # Log aggregation & statistics
+│   ├── viz/
+│   │   ├── visualize_feature.py     # Visualization entry point
+│   ├── deploy/
+│   │   ├── export_onnx.py           # ONNX model export
+│   ├── analysis/
+│   │   ├── aggregate_results.py     # Log aggregation & statistics
 │   ├── myAD.py                      # Core model (ModelConfig, Trainer, Predictor, etc.)
 │   ├── dataset/                     # Dataset abstraction layer (Facade pattern)
 │   │   ├── __init__.py              #   Unified API: get_dataloader()
