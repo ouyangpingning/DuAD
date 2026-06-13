@@ -47,10 +47,8 @@ def compute_imagewise_retrieval_metrics(
         out=np.zeros_like(precision),
         where=(precision + recall) != 0,
     )
-    optimal_threshold = pr_thresholds[np.argmax(f1_scores)] if len(pr_thresholds) > 0 else 0.0
-    predictions = (anomaly_prediction_weights >= optimal_threshold).astype(int)
-    f1 = metrics.f1_score(anomaly_ground_truth_labels, predictions)
-    
+    f1 = float(np.max(f1_scores)) if len(f1_scores) > 0 else 0.0
+
     return {
         "auroc": auroc,
         "ap": ap,
@@ -136,9 +134,7 @@ def compute_pixelwise_retrieval_metrics(anomaly_segmentations, ground_truth_mask
         where=(precision + recall) != 0,
     )
 
-    optimal_threshold = pr_thresholds[np.argmax(F1_scores)] if len(pr_thresholds) > 0 else 0.0
-    predictions = (flat_anomaly_segmentations >= optimal_threshold).astype(int)
-    f1 = metrics.f1_score(flat_ground_truth_masks.astype(int), predictions)
+    f1 = float(np.max(F1_scores)) if len(F1_scores) > 0 else 0.0
     
     pro = compute_pro(ground_truth_masks, anomaly_segmentations)
 
