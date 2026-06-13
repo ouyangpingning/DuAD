@@ -4,9 +4,9 @@
 结果自动保存至 results/ 目录（CSV 文件），同时打印到终端。
 
 用法:
-    python src/aggregate_results.py                    # 当前项目 model_log/
-    python src/aggregate_results.py /path/to/logs     # 指定日志目录
-    python src/aggregate_results.py --csv              # stdout 输出 CSV（不保存文件）
+    python src/analysis/aggregate_results.py                    # 当前项目 model_log/
+    python src/analysis/aggregate_results.py /path/to/logs     # 指定日志目录
+    python src/analysis/aggregate_results.py --csv              # stdout 输出 CSV（不保存文件）
 """
 import csv
 import re
@@ -290,14 +290,14 @@ def main():
     if args:
         log_dir = Path(args[0])
     else:
-        log_dir = Path(__file__).resolve().parent.parent / "model_log"
+        log_dir = Path(__file__).resolve().parent.parent.parent / "model_log"
 
     if not log_dir.is_dir():
         print(f"日志目录不存在: {log_dir}")
         sys.exit(1)
 
     # 输出目录为项目根下的 results/
-    results_dir = Path(__file__).resolve().parent.parent / "results"
+    results_dir = Path(__file__).resolve().parent.parent.parent / "results"
 
     # 发现并解析日志
     log_files = discover_logs(log_dir)

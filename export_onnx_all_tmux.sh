@@ -105,7 +105,7 @@ read -p "按回车开始导出，或 Ctrl+C 取消... "
 echo ""
 
 # ==================== 执行 ====================
-cmd="python src/export_onnx.py --category ${category} ${k_shot_arg} --pca_mode ${pca_mode} ${verify_flag}"
+cmd="python src/deploy/export_onnx.py --category ${category} ${k_shot_arg} --pca_mode ${pca_mode} ${verify_flag}"
 
 echo "执行: ${cmd}"
 echo ""

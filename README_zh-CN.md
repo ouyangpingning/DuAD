@@ -54,11 +54,11 @@ bash train_all_tmux.sh
 
 ```bash
 # 命令行（默认随机抽取 4 张测试图）
-python src/visualize_feature.py --categories "bottle screw"
+python src/viz/visualize_feature.py --categories "bottle screw"
 
 # 抽取更多样本 / 仅分析模式（无需 .pth）
-python src/visualize_feature.py --categories "bottle" --num_samples 8
-python src/visualize_feature.py --categories "bottle" --skip_inference
+python src/viz/visualize_feature.py --categories "bottle" --num_samples 8
+python src/viz/visualize_feature.py --categories "bottle" --skip_inference
 
 # 交互式批量（多 seed 并行）
 bash visualize_all_tmux.sh
@@ -68,10 +68,10 @@ bash visualize_all_tmux.sh
 
 ```bash
 # SVD 模式（默认）
-python src/export_onnx.py --category bottle
+python src/deploy/export_onnx.py --category bottle
 
 # PCA Student 模式（端到端）
-python src/export_onnx.py --category bottle --pca_mode student --verify
+python src/deploy/export_onnx.py --category bottle --pca_mode student --verify
 
 # 交互式导出
 bash export_onnx_all_tmux.sh
@@ -84,8 +84,8 @@ bash export_onnx_all_tmux.sh
 bash aggregate_results.sh
 
 # 直接调用
-python src/aggregate_results.py
-python src/aggregate_results.py --csv
+python src/analysis/aggregate_results.py
+python src/analysis/aggregate_results.py --csv
 ```
 
 ## 项目结构
@@ -101,9 +101,12 @@ python src/aggregate_results.py --csv
 ├── .gitmodules                      # Git 子模块配置
 ├── src/
 │   ├── main.py                      # 训练入口
-│   ├── visualize_feature.py         # 可视化入口
-│   ├── export_onnx.py               # ONNX 模型导出
-│   ├── aggregate_results.py         # 日志汇总统计
+│   ├── viz/
+│   │   ├── visualize_feature.py     # 可视化入口
+│   ├── deploy/
+│   │   ├── export_onnx.py           # ONNX 模型导出
+│   ├── analysis/
+│   │   ├── aggregate_results.py     # 日志汇总统计
 │   ├── myAD.py                      # 核心模型
 │   ├── dataset/                     # 数据集统一抽象层（Facade）
 │   │   ├── __init__.py              #   统一 API：get_dataloader()
@@ -246,16 +249,16 @@ python src/main.py --categories "bottle screw"
 python src/main.py --categories "bottle screw" --k_shot 4 --shot_seed 0
 
 # 可视化
-python src/visualize_feature.py --categories "bottle screw"
-python src/visualize_feature.py --categories "bottle" --skip_inference
+python src/viz/visualize_feature.py --categories "bottle screw"
+python src/viz/visualize_feature.py --categories "bottle" --skip_inference
 
 # 导出
-python src/export_onnx.py --category bottle
-python src/export_onnx.py --category bottle --pca_mode student --verify
+python src/deploy/export_onnx.py --category bottle
+python src/deploy/export_onnx.py --category bottle --pca_mode student --verify
 
 # 汇总
-python src/aggregate_results.py
-python src/aggregate_results.py --csv
+python src/analysis/aggregate_results.py
+python src/analysis/aggregate_results.py --csv
 ```
 
 ## 许可

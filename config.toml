@@ -1,5 +1,5 @@
 # MVTec AD Anomaly Detection — 统一参数配置
-# main.py 和 visualize_feature.py 共用此文件，修改一处全局生效。
+# main.py 和 src/viz/visualize_feature.py 共用此文件，修改一处全局生效。
 
 [architecture]
 target_size = 518 # 设置的输入图像尺寸，模型会自动调整输入图像大小以适应此尺寸，同时在评估时也会将测试图像调整到相同尺寸以保持一致性
