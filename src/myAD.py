@@ -240,9 +240,8 @@ class PCAMaskGenerator:
             probs = self._compute_first_pc_torch(features_tensor)  # [0, 1]
             mask = probs > 0.5
             mask_2d = mask.reshape(H, W)
-            mask_np = mask_2d.cpu().numpy() if mask_2d.is_cuda else mask_2d.numpy()
-            mask_processed = self._morphological_process(mask_np)
-            return torch.from_numpy(mask_processed.flatten()).to(device)
+            mask_processed = self._morphological_process(mask_2d)
+            return mask_processed.flatten()
 
         # ---- SVD 路径：PC 值 → 阈值 → 中心检测 → 掩模 ----
         # 计算第一主成分（GPU/CPU自动选择）
@@ -270,10 +269,9 @@ class PCAMaskGenerator:
             mask = (-first_pc) > self.threshold
             mask_2d = mask.reshape(H, W)
 
-        # 形态学后处理（需要转到CPU，因为OpenCV不支持GPU）
-        mask_np = mask_2d.cpu().numpy() if mask_2d.is_cuda else mask_2d.numpy()
-        mask_processed = self._morphological_process(mask_np)
-        return torch.from_numpy(mask_processed.flatten()).to(device)
+        # 形态学后处理 (GPU-native)
+        mask_processed = self._morphological_process(mask_2d)
+        return mask_processed.flatten()
 
     def _compute_first_pc_torch(self, features: torch.Tensor) -> torch.Tensor:
         """
@@ -304,28 +302,19 @@ class PCAMaskGenerator:
             first_pc_np = pca.fit_transform(features_np).squeeze()
             return torch.from_numpy(first_pc_np).to(features.device)
 
-    def _morphological_process(self, mask_2d: np.ndarray) -> np.ndarray:
+    def _morphological_process(self, mask_2d: torch.Tensor) -> torch.Tensor:
         """
-        形态学后处理 - 使用OpenCV
-        
+        形态学后处理 - 使用 PyTorch (GPU-native，避免 GPU↔CPU 数据传输)
+
         Args:
-            mask_2d: [H, W] 二值掩模
-        Returns: [H, W] 处理后的二值掩模
+            mask_2d: [H, W] 二值掩模 (torch.Tensor, bool)
+        Returns: [H, W] 处理后的二值掩模 (torch.Tensor, bool)
         """
-        # 转换为uint8 (0/1)
-        mask_uint8 = mask_2d.astype(np.uint8)
-        
-        # 创建结构元素
-        kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
-        
+        k = self.kernel_size
         # 先膨胀，扩大前景区域
-        mask_dilated = cv2.dilate(mask_uint8, kernel)
-        
+        mask_dilated = _dilate_binary(mask_2d, k)
         # 再闭运算（膨胀+腐蚀），填充小孔
-        mask_closed = cv2.morphologyEx(mask_dilated, cv2.MORPH_CLOSE, kernel)
-        
-        # 转换回bool
-        return mask_closed.astype(bool)
+        return _close_binary(mask_dilated, k)
     
     def apply_mask(
         self, 
@@ -343,6 +332,58 @@ class PCAMaskGenerator:
         Returns: 掩模后的特征 [M, C]
         """
         return features[mask.to(device)]
+
+
+# ---------------------------------------------------------------------------
+# PyTorch-native 二值形态学操作（替代 OpenCV，避免 GPU↔CPU 数据传输）
+# 原理：二值膨胀 = max pooling，二值腐蚀 = min pooling = -max_pool(-mask)
+# ---------------------------------------------------------------------------
+
+def _dilate_binary(mask_2d: torch.Tensor, kernel_size: int) -> torch.Tensor:
+    """二值膨胀 (GPU-native)
+
+    Args:
+        mask_2d: [H, W] 二值掩模
+        kernel_size: 方形结构元素尺寸
+    Returns:
+        [H, W] 膨胀后的二值掩模
+    """
+    padding = kernel_size // 2
+    x = mask_2d.float().unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+    x = F.max_pool2d(x, kernel_size=kernel_size, stride=1, padding=padding)
+    return x.squeeze(0).squeeze(0) > 0.5
+
+
+def _erode_binary(mask_2d: torch.Tensor, kernel_size: int,
+                  iterations: int = 1) -> torch.Tensor:
+    """二值腐蚀 (GPU-native)，支持多次迭代
+
+    Args:
+        mask_2d: [H, W] 二值掩模
+        kernel_size: 方形结构元素尺寸
+        iterations: 腐蚀迭代次数
+    Returns:
+        [H, W] 腐蚀后的二值掩模
+    """
+    for _ in range(iterations):
+        padding = kernel_size // 2
+        x = (-mask_2d.float()).unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+        x = -F.max_pool2d(x, kernel_size=kernel_size, stride=1, padding=padding)
+        mask_2d = x.squeeze(0).squeeze(0) > 0.5
+    return mask_2d
+
+
+def _close_binary(mask_2d: torch.Tensor, kernel_size: int) -> torch.Tensor:
+    """二值闭运算 = 膨胀 + 腐蚀 (GPU-native)
+
+    Args:
+        mask_2d: [H, W] 二值掩模
+        kernel_size: 方形结构元素尺寸
+    Returns:
+        [H, W] 闭运算后的二值掩模
+    """
+    mask_2d = _dilate_binary(mask_2d, kernel_size)
+    return _erode_binary(mask_2d, kernel_size)
 
 
 class PerlinMaskGenerator:
@@ -683,28 +724,26 @@ class Trainer:
                 mode='nearest'
             ).squeeze()  # [target_size, target_size]
 
-            pca_mask_np = pca_mask_img.cpu().numpy().astype(np.uint8)
-
             # 如果该图像没有前景，直接返回全零掩码
-            if pca_mask_np.sum() == 0:
+            if pca_mask_img.sum().item() == 0:
                 perlin_flat = np.zeros(H * W, dtype=bool)
                 all_masks.append(torch.from_numpy(perlin_flat))
                 continue
 
             # 用腐蚀（erode）收缩PCA掩模，让Perlin区域更靠近前景中心
-            kernel = np.ones((5, 5), np.uint8)
-            pca_mask_eroded = cv2.erode(pca_mask_np, kernel, iterations=2)
+            pca_mask_bool = pca_mask_img > 0.5
+            pca_mask_eroded = _erode_binary(pca_mask_bool, kernel_size=5, iterations=2)
 
             # 如果腐蚀后前景没了，回退到原始PCA掩模
-            if pca_mask_eroded.sum() == 0:
-                pca_mask_eroded = pca_mask_np
+            if pca_mask_eroded.sum().item() == 0:
+                pca_mask_eroded = pca_mask_bool
 
-            # 生成Perlin掩码
+            # 生成Perlin掩码（PerlinMaskGenerator 需要 numpy 输入）
             try:
                 perlin_s = self._perlin_gen(
                     img_shape=(images.shape[1], target_size, target_size),
                     feat_size=H,
-                    mask_fg=pca_mask_eroded.astype(np.float32),
+                    mask_fg=pca_mask_eroded.cpu().numpy().astype(np.float32),
                 )
                 perlin_flat = (perlin_s > 0).flatten()
             except Exception as e:

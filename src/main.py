@@ -149,22 +149,32 @@ def train_category(
         
         # === 保存阶段 ===
         # 检查是否为最佳
+        # macaroni2 使用组合分数 (0.5×Image + 0.5×Pixel)，其他类别以 Image AUROC 为主
         is_best = False
-        if current_score['image_auroc'] > best_score['image_auroc']:
-            is_best = True
-        elif (current_score['image_auroc'] == best_score['image_auroc'] and 
-              current_score['pixel_auroc'] > best_score['pixel_auroc']):
-            is_best = True
+        if atype == 'macaroni2':
+            current_combined = 0.5 * current_score['image_auroc'] + 0.5 * current_score['pixel_auroc']
+            best_combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
+            if current_combined > best_combined:
+                is_best = True
+        else:
+            if current_score['image_auroc'] > best_score['image_auroc']:
+                is_best = True
+            elif (current_score['image_auroc'] == best_score['image_auroc'] and
+                  current_score['pixel_auroc'] > best_score['pixel_auroc']):
+                is_best = True
         
         if is_best:
             best_score = current_score.copy()
             best_epoch = epoch
             model.save(best_ckpt_path, epoch=epoch, scores=best_score)
-            
+
             logger.info('@' * 50)
             logger.info(f"NEW BEST! Epoch: {epoch+1}")
             logger.info(f"  Image AUROC: {best_score['image_auroc']:.4f}")
             logger.info(f"  Pixel AUROC: {best_score['pixel_auroc']:.4f}")
+            if atype == 'macaroni2':
+                combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
+                logger.info(f"  Combined (0.5I+0.5P): {combined:.4f}")
             logger.info('@' * 50)
 
     # === 最终完整评估（加载 best checkpoint 计算全部指标）===
@@ -275,10 +285,6 @@ def main(categories, k_shot, shot_seed, dataset):
     config = build_model_config(cfg, str(device))
     category_pca_thresholds = get_category_pca_thresholds(cfg)
     category_pca_border_thresholds = get_category_pca_border_thresholds(cfg)
-
-    # 少样本时固定噪声强度，不使用退火
-    if k_shot is not None:
-        config.use_noise_annealing = False
 
     # 记录总体结果
     all_results = []
