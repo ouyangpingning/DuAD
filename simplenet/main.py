@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(_proj_root, "src"))
 sys.path.insert(0, _proj_root)
 
 from commen_import import *
-from dataset_mvtec import get_mvtec_dataloader, get_transform
+from dataset import get_dataloader, get_transform
 from utils import setup_logger, set_seed, clean_GPU_Cache
 from simplenet.simplenet import SimpleNet, SimpleNetConfig
 from simplenet.config import load_config, build_simplenet_config, get_paths
@@ -45,29 +45,33 @@ def train_category(
     set_seed(0)
 
     # 数据增强（消融实验）：由 config.toml [augment] use_augment 总开关控制
-    enable_augment = False
-    if config.use_augment:
-        if config.augment_categories is None:
-            enable_augment = True
-        elif atype in config.augment_categories:
-            enable_augment = True
-    logger.info(f"Image augmentation: {enable_augment}")
+    # 注意: 只有少样本模式才启用增强
+    def _enabled(cat_list):
+        if not config.use_augment:
+            return False
+        if k_shot is None:
+            return False
+        if cat_list is None:
+            return False
+        return atype in cat_list
 
-    enable_color_augment = False
-    if config.use_augment:
-        if config.color_augment_categories is not None:
-            enable_color_augment = atype in config.color_augment_categories
-    logger.info(f"Color augmentation: {enable_color_augment}")
+    enable_flip = _enabled(config.augment_categories)
+    enable_rotate = _enabled(config.augment_categories)
+    enable_color_jitter = _enabled(config.color_augment_categories)
+    logger.info(f"Augmentation: flip={enable_flip}, rotate={enable_rotate}, "
+                f"color_jitter={enable_color_jitter}")
 
     train_transform, test_transform, gt_transform = get_transform(
         size=config.resize,
         isize=config.isize,
-        augment=enable_augment,
-        color_augment=enable_color_augment,
+        flip=enable_flip,
+        rotate=enable_rotate,
+        color_jitter=enable_color_jitter,
     )
-    train_loader, test_loader = get_mvtec_dataloader(
+    train_loader, test_loader = get_dataloader(
         root_dir=base_dir,
-        Atype=atype,
+        category=atype,
+        dataset_type=dataset_type,
         train_transform=train_transform,
         test_transform=test_transform,
         gt_transform=gt_transform,
@@ -186,7 +190,14 @@ def train_category(
     default=0,
     help='少样本采样时的随机种子',
 )
-def main(categories, k_shot, shot_seed):
+@click.option(
+    '--dataset',
+    type=click.Choice(['mvtec', 'visa']),
+    default='mvtec',
+    show_default=True,
+    help='数据集选择: mvtec (MVTec AD) 或 visa (VisA)',
+)
+def main(categories, k_shot, shot_seed, dataset):
     categories = categories.strip().split()
 
     print(f"CUDA available: {torch.cuda.is_available()}")
@@ -195,6 +206,7 @@ def main(categories, k_shot, shot_seed):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     print(f"Categories: {categories}")
+    print(f"Dataset: {dataset}")
     if k_shot is not None:
         print(f"Few-shot mode: K={k_shot}, seed={shot_seed}")
 
@@ -202,7 +214,11 @@ def main(categories, k_shot, shot_seed):
     config_path = os.path.join(os.path.dirname(__file__), "config.toml")
     cfg = load_config(config_path)
     paths = get_paths(cfg)
-    base_dir = paths["mvtec_base_dir"]
+    # 根据数据集类型选择对应的数据根目录
+    if dataset == "visa":
+        base_dir = paths.get("visa_base_dir", paths["mvtec_base_dir"])
+    else:
+        base_dir = paths["mvtec_base_dir"]
     ckpt_dir = paths["ckpt_dir"]
     log_dir = paths["log_dir"]
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -222,6 +238,7 @@ def main(categories, k_shot, shot_seed):
             device=device,
             k_shot=k_shot,
             shot_seed=shot_seed,
+            dataset_type=dataset,
         )
         all_results.append(result)
 

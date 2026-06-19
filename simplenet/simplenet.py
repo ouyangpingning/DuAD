@@ -361,7 +361,6 @@ class SimpleNet:
         self.projection = Projection(
             in_planes=self.config.input_planes,
             n_layers=1,
-            layer_type=0,
         ).to(self.config.device)
 
         self.discriminator = SimpleNetDiscriminator(
