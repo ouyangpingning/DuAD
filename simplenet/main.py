@@ -114,12 +114,19 @@ def train_category(
         logger.info(f"  Eval - Image AUROC: {current_score['image_auroc']:.4f}, "
                     f"Pixel AUROC: {current_score['pixel_auroc']:.4f}")
 
+        # macaroni2 使用组合分数 (0.5×Image + 0.5×Pixel)，其他类别以 Image AUROC 为主
         is_best = False
-        if current_score['image_auroc'] > best_score['image_auroc']:
-            is_best = True
-        elif (current_score['image_auroc'] == best_score['image_auroc'] and
-              current_score['pixel_auroc'] > best_score['pixel_auroc']):
-            is_best = True
+        if atype == 'macaroni2':
+            current_combined = 0.5 * current_score['image_auroc'] + 0.5 * current_score['pixel_auroc']
+            best_combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
+            if current_combined > best_combined:
+                is_best = True
+        else:
+            if current_score['image_auroc'] > best_score['image_auroc']:
+                is_best = True
+            elif (current_score['image_auroc'] == best_score['image_auroc'] and
+                  current_score['pixel_auroc'] > best_score['pixel_auroc']):
+                is_best = True
 
         if is_best:
             best_score = current_score.copy()
@@ -129,6 +136,9 @@ def train_category(
             logger.info(f"NEW BEST! Epoch: {epoch + 1}")
             logger.info(f"  Image AUROC: {best_score['image_auroc']:.4f}")
             logger.info(f"  Pixel AUROC: {best_score['pixel_auroc']:.4f}")
+            if atype == 'macaroni2':
+                combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
+                logger.info(f"  Combined (0.5I+0.5P): {combined:.4f}")
             logger.info('@' * 50)
 
     # 最终完整评估
