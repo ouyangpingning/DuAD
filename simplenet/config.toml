@@ -27,9 +27,12 @@ ckpt_dir = "./model_ckpt/simplenet"
 log_dir = "./model_log/simplenet"
 
 [augment]
-use_augment = true             # 是否启用数据增强（几何翻转+旋转），少样本训练时建议设为 true
-augment_categories = ["grid", "hazelnut", "screw"]  # 少样本时启用几何增强的类别
-color_augment_categories = ["toothbrush"]             # 少样本时启用颜色增强的类别
+use_augment = true                                           # 总开关：少样本训练时设为 true
+# 四种独立数据增强，可按类别分别指定（少样本模式下生效）
+flip_categories = ["grid", "hazelnut", "screw", "macaroni1", "macaroni2", "capsules", "pcb1"]
+rotate_categories = ["grid", "hazelnut", "screw", "macaroni1", "macaroni2", "capsules", "pcb1"]
+translate_categories = ["macaroni1"]
+color_jitter_categories = ["toothbrush"]
 
 [misc]
 patch_size = 3

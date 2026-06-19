@@ -55,17 +55,19 @@ def train_category(
             return False
         return atype in cat_list
 
-    enable_flip = _enabled(config.augment_categories)
-    enable_rotate = _enabled(config.augment_categories)
-    enable_color_jitter = _enabled(config.color_augment_categories)
+    enable_flip = _enabled(config.flip_categories)
+    enable_rotate = _enabled(config.rotate_categories)
+    enable_translate = _enabled(config.translate_categories)
+    enable_color_jitter = _enabled(config.color_jitter_categories)
     logger.info(f"Augmentation: flip={enable_flip}, rotate={enable_rotate}, "
-                f"color_jitter={enable_color_jitter}")
+                f"translate={enable_translate}, color_jitter={enable_color_jitter}")
 
     train_transform, test_transform, gt_transform = get_transform(
         size=config.resize,
         isize=config.isize,
         flip=enable_flip,
         rotate=enable_rotate,
+        translate=enable_translate,
         color_jitter=enable_color_jitter,
     )
     train_loader, test_loader = get_dataloader(

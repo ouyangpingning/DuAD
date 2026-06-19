@@ -78,10 +78,12 @@ class SimpleNetConfig:
     noise_std: float = 0.015
     mix_noise: int = 1                # 噪声强度种类数
 
-    # 数据增强控制（消融实验：少样本时启用，与 DuAD 对齐）
+    # 数据增强控制 — 4 种独立增强（消融实验：少样本时启用，与 DuAD 对齐）
     use_augment: bool = False           # 总开关：是否启用数据增强
-    augment_categories: List[str] = None
-    color_augment_categories: List[str] = None
+    flip_categories: List[str] = None
+    rotate_categories: List[str] = None
+    translate_categories: List[str] = None
+    color_jitter_categories: List[str] = None
 
     # 其他
     patch_size: int = 3
