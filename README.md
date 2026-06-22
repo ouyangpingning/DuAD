@@ -4,6 +4,10 @@
 
 Unsupervised industrial visual anomaly detection using frozen DINOv2 (`dinov2_vits14_reg`) features + dual-branch GAN discriminator. Supports both **full-shot** and **few-shot** scenarios.
 
+## Method Overview
+
+![DuAD Method](Method.png)
+
 ## Quick Start
 
 ### Clone
