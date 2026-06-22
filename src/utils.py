@@ -289,7 +289,7 @@ def _embed_legacy(features,layers:list,patchsize:int, stride:int,target_patches:
         简化版:去掉了Align_patches步骤,假设所有层特征具有相同的空间分辨率
 
         .. deprecated::
-            逻辑已迁移至 myAD.FeatureAggregator._aggregate_neighborhood()。
+            逻辑已迁移至 DuAD.FeatureAggregator._aggregate_neighborhood()。
             保留此函数仅供向后兼容, 新代码请使用 FeatureAggregator。
     """
 
@@ -371,7 +371,7 @@ def _embed_channel_concat(
         _embed_concat:  Concat channels → reshape                           (纯通道拼接, 无融合)
 
     .. deprecated::
-        逻辑已迁移至 myAD.FeatureAggregator._aggregate_channel_concat()。
+        逻辑已迁移至 DuAD.FeatureAggregator._aggregate_channel_concat()。
         保留此函数仅供向后兼容, 新代码请使用 FeatureAggregator。
     
 

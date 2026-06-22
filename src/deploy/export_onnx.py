@@ -38,7 +38,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from myAD import DINOv2AnomalyDetector, ModelConfig
+from DuAD import DINOv2AnomalyDetector, ModelConfig
 from config import load_config, build_model_config
 from dataset import get_dataloader, get_transform
 
@@ -86,8 +86,8 @@ class _BaseONNXModel(torch.nn.Module):
 
     def _embed_legacy(self, layer_features):
         """
-        特征聚合 (与 myAD.FeatureAggregator._aggregate_neighborhood() 等价,
-        内联保证 ONNX 可追踪。如需修改聚合逻辑 → 同步更新 myAD.FeatureAggregator)。
+        特征聚合 (与 DuAD.FeatureAggregator._aggregate_neighborhood() 等价,
+        内联保证 ONNX 可追踪。如需修改聚合逻辑 → 同步更新 DuAD.FeatureAggregator)。
 
         layer_features: list of [B, 384, H, W]
         Returns: [B*H*W, input_planes]

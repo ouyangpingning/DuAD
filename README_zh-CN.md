@@ -107,7 +107,7 @@ python src/analysis/aggregate_results.py --csv
 │   │   ├── export_onnx.py           # ONNX 模型导出
 │   ├── analysis/
 │   │   ├── aggregate_results.py     # 日志汇总统计
-│   ├── myAD.py                      # 核心模型
+│   ├── DuAD.py                      # 核心模型
 │   ├── dataset/                     # 数据集统一抽象层（Facade）
 │   │   ├── __init__.py              #   统一 API：get_dataloader()
 │   │   ├── mvtec.py                 #   MVTec AD 数据集

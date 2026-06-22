@@ -95,7 +95,7 @@ python src/analysis/aggregate_results.py --csv
 │   │   ├── export_onnx.py           # ONNX model export
 │   ├── analysis/
 │   │   ├── aggregate_results.py     # Log aggregation & statistics
-│   ├── myAD.py                      # Core model (ModelConfig, Trainer, Predictor, etc.)
+│   ├── DuAD.py                      # Core model (ModelConfig, Trainer, Predictor, etc.)
 │   ├── dataset/                     # Dataset abstraction layer (Facade pattern)
 │   │   ├── __init__.py              #   Unified API: get_dataloader()
 │   │   ├── mvtec.py                 #   MVTec AD dataset

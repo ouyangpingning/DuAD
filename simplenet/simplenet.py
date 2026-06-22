@@ -1,6 +1,6 @@
 """SimpleNet 核心实现。
 
-参考 src/myAD.py 的架构设计:
+参考 src/DuAD.py 的架构设计:
   SimpleNetConfig  → 配置 dataclass
   SimpleNetFeatureExtractor → 特征提取 (WideResNet50-2 + _embed)
   SimpleNetTrainer  → 训练逻辑
@@ -24,12 +24,12 @@ from utils import (
     setup_logger,
     init_weight,
 )
-from myAD import Projection
+from DuAD import Projection
 from simplenet.wide_resnet import wide_resnet50_2, _embed
 
 
 class SimpleNetDiscriminator(torch.nn.Module):
-    """SimpleNet 原版判别器 — 与 src/myAD.py 的区别是包含 BatchNorm1d。
+    """SimpleNet 原版判别器 — 与 src/DuAD.py 的区别是包含 BatchNorm1d。
 
     原版 SimpleNet (CVPR 2023) 在 discriminator body 中使用了 BatchNorm1d，
     这对稳定训练和最终性能有实际影响。

@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from commen_import import *
 from utils import clean_GPU_Cache, setup_logger
 from dataset import get_dataloader, get_transform
-from myAD import DINOv2AnomalyDetector, ModelConfig, PCAMaskGenerator, PerlinMaskGenerator
+from DuAD import DINOv2AnomalyDetector, ModelConfig, PCAMaskGenerator, PerlinMaskGenerator
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
 from sklearn.decomposition import PCA
 import cv2

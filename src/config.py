@@ -4,7 +4,7 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib
 
-from myAD import ModelConfig
+from DuAD import ModelConfig
 
 
 def load_config(path="config.toml"):
