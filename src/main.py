@@ -34,9 +34,9 @@ def train_category(
     cat_log_dir = os.path.join(log_dir, dataset_type, atype)
     os.makedirs(cat_log_dir, exist_ok=True)
     if k_shot is not None:
-        log_name = f"{atype}_k{k_shot}_s{shot_seed}"
+        log_name = f"{atype}_k{k_shot}_s{shot_seed}{config.ablation_tag}"
     else:
-        log_name = atype
+        log_name = f"{atype}{config.ablation_tag}"
     logger = setup_logger(log_name, cat_log_dir, logging.DEBUG, log_console=False)
     logger.info(f"{'='*60}")
     logger.info(f"Start training category: {atype}")
@@ -106,9 +106,9 @@ def train_category(
     cat_ckpt_dir = os.path.join(ckpt_dir, atype)
     os.makedirs(cat_ckpt_dir, exist_ok=True)
     if k_shot is not None:
-        best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}_best_ckpt.pth")
+        best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_k{k_shot}_s{shot_seed}{config.ablation_tag}_best_ckpt.pth")
     else:
-        best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}_best_ckpt.pth")
+        best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}{config.ablation_tag}_best_ckpt.pth")
 
     # 训练 PCA Student（每次按需训练，不持久化）
     model.train_pca_student(train_loader)
@@ -246,7 +246,26 @@ def train_category(
     show_default=True,
     help='数据集选择: mvtec (MVTec AD) 或 visa (VisA)'
 )
-def main(categories, k_shot, shot_seed, dataset):
+# ===== 消融实验 CLI flags =====
+@click.option(
+    '--no_pca_mask',
+    is_flag=True,
+    default=False,
+    help='消融: 关闭 PCA 掩模 (自动也关闭 Perlin，回退到单分支 Hinge)'
+)
+@click.option(
+    '--no_perlin_mask',
+    is_flag=True,
+    default=False,
+    help='消融: 关闭 Perlin 掩模 (保留 PCA，单分支 Hinge)'
+)
+@click.option(
+    '--no_augment',
+    is_flag=True,
+    default=False,
+    help='消融: 关闭所有数据增强'
+)
+def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment):
     """主函数"""
     # 将 click 返回的字符串按空格分割为列表
     categories = categories.strip().split()
@@ -285,6 +304,29 @@ def main(categories, k_shot, shot_seed, dataset):
     config = build_model_config(cfg, str(device))
     category_pca_thresholds = get_category_pca_thresholds(cfg)
     category_pca_border_thresholds = get_category_pca_border_thresholds(cfg)
+
+    # ===== 消融实验 CLI override =====
+    ablation_tags = []
+    if no_pca_mask:
+        config.use_pca_mask = False
+        config.use_perlin_mask = False  # Perlin 依赖 PCA，一起关掉
+        ablation_tags.append("noPCA")
+        print("[ABLATION] PCA mask DISABLED (also disabling Perlin)")
+    if no_perlin_mask:
+        config.use_perlin_mask = False
+        ablation_tags.append("noPerlin")
+        print("[ABLATION] Perlin mask DISABLED (PCA branch only)")
+    if no_augment:
+        config.flip_categories = []
+        config.rotate_categories = []
+        config.translate_categories = []
+        config.color_jitter_categories = []
+        ablation_tags.append("noAug")
+        print("[ABLATION] All data augmentations DISABLED")
+    if ablation_tags:
+        config.ablation_tag = "_" + "_".join(ablation_tags)
+        print(f"[ABLATION] Active tags: {', '.join(ablation_tags)}")
+    # ================================
 
     # 记录总体结果
     all_results = []

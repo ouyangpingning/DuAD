@@ -56,6 +56,9 @@ def build_model_config(cfg: dict, device: str = "cuda") -> ModelConfig:
         color_jitter_categories=list(augment["color_jitter_categories"]),
         patch_size=misc["patch_size"],
         use_scheduler=train["use_scheduler"],
+        scheduler_type=train.get("scheduler_type", "cosine"),
+        multistep_milestones=list(train.get("multistep_milestones", [0.8, 0.9])),
+        multistep_gamma=train.get("multistep_gamma", 0.4),
         device=device,
         # PCA Student 配置
         use_pca_student=pca_student.get("use_pca_student", False),

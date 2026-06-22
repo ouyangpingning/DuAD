@@ -62,9 +62,17 @@ class ModelConfig:
     pca_student_epochs: int = 50        # 训练轮数
     pca_student_batch_size: int = 4096  # mini-batch 大小 (patch 级)
 
+    # 消融实验标记
+    ablation_tag: str = ""              # 消融变体标识，用于 checkpoint/log 命名
+
+    # Scheduler 配置
+    use_scheduler: bool = True          # 是否使用学习率调度器
+    scheduler_type: str = "cosine"      # 调度器类型: "cosine" (CosineAnnealingLR) 或 "multistep" (MultiStepLR)
+    multistep_milestones: List[float] = None  # MultiStepLR 的 milestone (总步数比例), 如 [0.8, 0.9]
+    multistep_gamma: float = 0.4        # MultiStepLR 的衰减因子
+
     # 其他
     patch_size: int = 3
-    use_scheduler: bool = True
     device: str = "cuda"
     
     def __post_init__(self):
@@ -72,6 +80,8 @@ class ModelConfig:
             self.layer_indices = [2, 5, 8, 11]
         if self.pca_student_hidden_dims is None:
             self.pca_student_hidden_dims = [512, 128]
+        if self.multistep_milestones is None:
+            self.multistep_milestones = [0.8, 0.9]
 
 # 复用组件--特征提取器
 class FeatureExtractor(torch.nn.Module):
@@ -599,11 +609,30 @@ class Trainer:
         
         # 学习率调度器
         total_steps = config.gan_epochs * config.meta_epochs
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer_dsc,
-            T_max=total_steps,
-            eta_min=config.dsc_lr * 0.4
-        ) if config.use_scheduler else None
+        if config.use_scheduler:
+            if config.scheduler_type == "multistep":
+                # MultiStepLR (SuperSimpleNet 风格): 在指定比例处衰减 lr
+                milestones = [int(total_steps * m) for m in config.multistep_milestones]
+                self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                    self.optimizer_dsc,
+                    milestones=milestones,
+                    gamma=config.multistep_gamma,
+                )
+                self.logger.info(
+                    f"Scheduler: MultiStepLR (milestones={milestones}, gamma={config.multistep_gamma})"
+                )
+            else:
+                # CosineAnnealingLR (默认)
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer_dsc,
+                    T_max=total_steps,
+                    eta_min=config.dsc_lr * 0.4,
+                )
+                self.logger.info(
+                    f"Scheduler: CosineAnnealingLR (T_max={total_steps}, eta_min={config.dsc_lr * 0.4:.2e})"
+                )
+        else:
+            self.scheduler = None
         
         self.global_step = 0
         self.current_meta_epoch = 0
@@ -799,90 +828,124 @@ class Trainer:
         
         current_std = self._get_current_noise_std()
 
-        # ==================== 双分支训练模式 ====================
+        # ==================== PCA掩模训练模式 ====================
         if pca_mask is not None:
-            # ---- 分支1: Perlin定位分支 (BCE Loss) ----
-            # 在PCA基础上生成Perlin掩码，用于定位噪声位置
-            perlin_mask_tensor = self._generate_perlin_masks(images, H, W, pca_mask)
-            perlin_mask = pca_mask & perlin_mask_tensor  # Perlin噪声只在PCA前景内的Perlin区域
-            # 获取Perlin区域的投影特征
-            pca_indices = torch.nonzero(pca_mask, as_tuple=True)[0]
-            perlin_indices = torch.nonzero(perlin_mask, as_tuple=True)[0]
-            is_perlin = torch.isin(pca_indices, perlin_indices)
-            projected_perlin = projected[is_perlin] if perlin_indices.numel() > 0 else projected
-            
-            if projected_perlin.size(0) == 0:
-                projected_perlin = projected
-            
-            # 在Perlin区域加噪--高斯混合噪声作为基础
-            noise_perlin = torch.normal(0, current_std, projected_perlin.shape, device=projected_perlin.device)
-            fake_perlin = projected_perlin + noise_perlin
+            if self.config.use_perlin_mask:
+                # ==================== 双分支训练 (Perlin BCE + PCA Hinge) ====================
+                # ---- 分支1: Perlin定位分支 (BCE Loss) ----
+                # 在PCA基础上生成Perlin掩码，用于定位噪声位置
+                perlin_mask_tensor = self._generate_perlin_masks(images, H, W, pca_mask)
+                perlin_mask = pca_mask & perlin_mask_tensor  # Perlin噪声只在PCA前景内的Perlin区域
+                # 获取Perlin区域的投影特征
+                pca_indices = torch.nonzero(pca_mask, as_tuple=True)[0]
+                perlin_indices = torch.nonzero(perlin_mask, as_tuple=True)[0]
+                is_perlin = torch.isin(pca_indices, perlin_indices)
+                projected_perlin = projected[is_perlin] if perlin_indices.numel() > 0 else projected
 
-            # 构建Perlin分支的输入: 全部真实特征 + Perlin区域假特征
-            scores_perlin = self.discriminator(
-                torch.cat([projected, fake_perlin], dim=0)
-            )
-            true_scores_perlin = scores_perlin[:len(projected)]
-            fake_scores_perlin = scores_perlin[len(projected):]
+                if projected_perlin.size(0) == 0:
+                    projected_perlin = projected
 
-            # BCE损失: 将判别器输出sigmoid后作为"是真实特征"的概率
-            # true_labels=1 (真实), fake_labels=0 (假/噪声)
-            true_labels = torch.ones_like(true_scores_perlin)
-            fake_labels = torch.zeros_like(fake_scores_perlin)
+                # 在Perlin区域加噪--高斯混合噪声作为基础
+                noise_perlin = torch.normal(0, current_std, projected_perlin.shape, device=projected_perlin.device)
+                fake_perlin = projected_perlin + noise_perlin
 
-            bce_loss = F.binary_cross_entropy_with_logits(
-                true_scores_perlin, true_labels, reduction='mean'
-            ) + F.binary_cross_entropy_with_logits(
-                fake_scores_perlin, fake_labels, reduction='mean'
-            )
+                # 构建Perlin分支的输入: 全部真实特征 + Perlin区域假特征
+                scores_perlin = self.discriminator(
+                    torch.cat([projected, fake_perlin], dim=0)
+                )
+                true_scores_perlin = scores_perlin[:len(projected)]
+                fake_scores_perlin = scores_perlin[len(projected):]
 
-            # ---- 分支2: PCA对抗分支 (Hinge Loss) ----
-            # 在整个PCA前景patch上施加标准对抗训练，不使用Perlin限制
-            noise_pca = torch.normal(0, current_std, projected.shape, device=projected.device)
-            fake_pca = projected + noise_pca
+                # BCE损失: 将判别器输出sigmoid后作为"是真实特征"的概率
+                # true_labels=1 (真实), fake_labels=0 (假/噪声)
+                true_labels = torch.ones_like(true_scores_perlin)
+                fake_labels = torch.zeros_like(fake_scores_perlin)
 
-            # 构建PCA分支的输入: 全部真实特征 + 全部假特征
-            scores_pca = self.discriminator(
-                torch.cat([projected, fake_pca], dim=0)
-            )
-            true_scores_pca = scores_pca[:len(projected)]
-            fake_scores_pca = scores_pca[len(projected):]
-            
-            # 非对称Hinge: 真实 > 1.0, 假 < 0.0 (与BCE目标对齐)
-            true_loss_pca = torch.clip(-true_scores_pca + 1.0, min=0).mean()
-            fake_loss_pca = torch.clip(fake_scores_pca, min=0).mean()
-            hinge_loss = true_loss_pca + fake_loss_pca
-            
-            # ---- 合并损失 ----
-            w_perlin = getattr(self.config, 'perlin_branch_weight', 1.0)
-            w_pca = getattr(self.config, 'pca_branch_weight', 1.0)
-            loss = w_perlin * bce_loss + w_pca * hinge_loss
-            
-            # 反向传播
-            self.optimizer_proj.zero_grad()
-            self.optimizer_dsc.zero_grad()
-            loss.backward()
-            self.optimizer_proj.step()
-            self.optimizer_dsc.step()
-            # -------------------
-            # 计算指标
-            with torch.no_grad():
-                p_true = (true_scores_pca >= 1.0).float().mean().item()
-                p_fake = (fake_scores_pca < 0.0).float().mean().item()
+                bce_loss = F.binary_cross_entropy_with_logits(
+                    true_scores_perlin, true_labels, reduction='mean'
+                ) + F.binary_cross_entropy_with_logits(
+                    fake_scores_perlin, fake_labels, reduction='mean'
+                )
 
-                # 日志
-                if self.global_step % self.log_interval == 0:
-                    self.logger.info(f"--- Step {self.global_step} 双分支训练 (noise_std={current_std:.4f}, noise=gaussian) ---")
-                    self.logger.info(f"Perlin分支 - BCE: {bce_loss.item():.4f}, mask_ratio: {perlin_mask.float().mean().item():.3f}")
-                    self.logger.info(f"PCA分支   - Hinge: {hinge_loss.item():.4f}, true_loss: {true_loss_pca.item():.4f}, fake_loss: {fake_loss_pca.item():.4f}")
-                    self.logger.info(f"合并损失  - total: {loss.item():.4f} (w_perlin={w_perlin}, w_pca={w_pca})")
-                    self.logger.info(f"下面分别是：投影特征、Perlin分支假特征、PCA分支假特征的统计信息：")
-                    self._log_tensor_stats("Projected", projected)
-                    self._log_tensor_stats("PerlinFake", fake_perlin)
-                    self._log_tensor_stats("PCAFake", fake_pca)
-                    self.logger.info("-" * 60)
-            self.global_step += 1
-            return loss.item(), p_true, p_fake
+                # ---- 分支2: PCA对抗分支 (Hinge Loss) ----
+                # 在整个PCA前景patch上施加标准对抗训练，不使用Perlin限制
+                noise_pca = torch.normal(0, current_std, projected.shape, device=projected.device)
+                fake_pca = projected + noise_pca
+
+                # 构建PCA分支的输入: 全部真实特征 + 全部假特征
+                scores_pca = self.discriminator(
+                    torch.cat([projected, fake_pca], dim=0)
+                )
+                true_scores_pca = scores_pca[:len(projected)]
+                fake_scores_pca = scores_pca[len(projected):]
+
+                # 非对称Hinge: 真实 > 1.0, 假 < 0.0 (与BCE目标对齐)
+                true_loss_pca = torch.clip(-true_scores_pca + 1.0, min=0).mean()
+                fake_loss_pca = torch.clip(fake_scores_pca, min=0).mean()
+                hinge_loss = true_loss_pca + fake_loss_pca
+
+                # ---- 合并损失 ----
+                w_perlin = getattr(self.config, 'perlin_branch_weight', 1.0)
+                w_pca = getattr(self.config, 'pca_branch_weight', 1.0)
+                loss = w_perlin * bce_loss + w_pca * hinge_loss
+
+                # 反向传播
+                self.optimizer_proj.zero_grad()
+                self.optimizer_dsc.zero_grad()
+                loss.backward()
+                self.optimizer_proj.step()
+                self.optimizer_dsc.step()
+                # -------------------
+                # 计算指标
+                with torch.no_grad():
+                    p_true = (true_scores_pca >= 1.0).float().mean().item()
+                    p_fake = (fake_scores_pca < 0.0).float().mean().item()
+
+                    # 日志
+                    if self.global_step % self.log_interval == 0:
+                        self.logger.info(f"--- Step {self.global_step} 双分支训练 (noise_std={current_std:.4f}, noise=gaussian) ---")
+                        self.logger.info(f"Perlin分支 - BCE: {bce_loss.item():.4f}, mask_ratio: {perlin_mask.float().mean().item():.3f}")
+                        self.logger.info(f"PCA分支   - Hinge: {hinge_loss.item():.4f}, true_loss: {true_loss_pca.item():.4f}, fake_loss: {fake_loss_pca.item():.4f}")
+                        self.logger.info(f"合并损失  - total: {loss.item():.4f} (w_perlin={w_perlin}, w_pca={w_pca})")
+                        self.logger.info(f"下面分别是：投影特征、Perlin分支假特征、PCA分支假特征的统计信息：")
+                        self._log_tensor_stats("Projected", projected)
+                        self._log_tensor_stats("PerlinFake", fake_perlin)
+                        self._log_tensor_stats("PCAFake", fake_pca)
+                        self.logger.info("-" * 60)
+                self.global_step += 1
+                return loss.item(), p_true, p_fake
+            else:
+                # ==================== 单分支PCA训练 (PCA Hinge only, 无Perlin) ====================
+                # 仅在PCA前景patch上进行标准对抗训练
+                noise = torch.normal(0, current_std, projected.shape, device=projected.device)
+                fake = projected + noise
+
+                scores = self.discriminator(torch.cat([projected, fake], dim=0))
+                true_scores = scores[:len(projected)]
+                fake_scores = scores[len(projected):]
+
+                true_loss = torch.clip(-true_scores + 1.0, min=0).mean()
+                fake_loss = torch.clip(fake_scores, min=0).mean()
+                loss = true_loss + fake_loss
+
+                self.optimizer_proj.zero_grad()
+                self.optimizer_dsc.zero_grad()
+                loss.backward()
+                self.optimizer_proj.step()
+                self.optimizer_dsc.step()
+
+                with torch.no_grad():
+                    p_true = (true_scores >= 1.0).float().mean().item()
+                    p_fake = (fake_scores < 0.0).float().mean().item()
+
+                    if self.global_step % self.log_interval == 0:
+                        self.logger.info(f"--- Step {self.global_step} 单分支PCA训练 (noise_std={current_std:.4f}, noise=gaussian) ---")
+                        self.logger.info(f"Hinge Loss: {loss.item():.4f}, true_loss: {true_loss.item():.4f}, fake_loss: {fake_loss.item():.4f}")
+                        self._log_tensor_stats("Projected", projected)
+                        self._log_tensor_stats("Fake", fake)
+                        self.logger.info("-" * 60)
+                self.global_step += 1
+                return loss.item(), p_true, p_fake
         else:
             # ---- 单分支训练 (无PCA掩码，标准Hinge Loss) ----
             noise = torch.normal(0, current_std, projected.shape, device=projected.device)
