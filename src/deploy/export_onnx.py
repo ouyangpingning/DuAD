@@ -86,7 +86,8 @@ class _BaseONNXModel(torch.nn.Module):
 
     def _embed_legacy(self, layer_features):
         """
-        特征聚合 (与 utils._embed_legacy 等价, 内联保证 ONNX 可追踪)。
+        特征聚合 (与 myAD.FeatureAggregator._aggregate_neighborhood() 等价,
+        内联保证 ONNX 可追踪。如需修改聚合逻辑 → 同步更新 myAD.FeatureAggregator)。
 
         layer_features: list of [B, 384, H, W]
         Returns: [B*H*W, input_planes]

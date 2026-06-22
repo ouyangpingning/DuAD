@@ -283,10 +283,14 @@ def _embed_legacy(features,layers:list,patchsize:int, stride:int,target_patches:
         patchsize: 一个patch的大小, 决定滑窗裁剪操作 \n
         stride: 步进值, 决定滑窗裁剪操作 \n
         target_patches: 对齐patch个数,没有给定的话会使用fetures_layer的分辨率的最大乘积 \n
-        target_dim: 要对齐的维度, 一般是最大输入特获图通道数 \n 
+        target_dim: 要对齐的维度, 一般是最大输入特获图通道数 \n
         output_size : 最后要输出的每个patch的维度,通过一维池化来给定
-        
+
         简化版:去掉了Align_patches步骤,假设所有层特征具有相同的空间分辨率
+
+        .. deprecated::
+            逻辑已迁移至 myAD.FeatureAggregator._aggregate_neighborhood()。
+            保留此函数仅供向后兼容, 新代码请使用 FeatureAggregator。
     """
 
     def patchify(feature:torch.Tensor, patchsize:int, stride:int):
@@ -349,4 +353,60 @@ def _embed_legacy(features,layers:list,patchsize:int, stride:int,target_patches:
     # 去除中间维度: [B*n_patches, 1, output_size] -> [B*n_patches, output_size]
     _features = _features.reshape(len(_features), -1)
     return _features, patch_shapes
+
+
+def _embed_channel_concat(
+    features,
+    layers,
+    output_size,
+):
+    """
+    通道拼接聚合 — 消融实验用 (B4)。
+
+    不做邻域 patchify、不做 Align_dim、不做跨层 AdaptiveAvgPool1d。
+    仅将各层特征在通道维度直接拼接，保持逐点独立。
+
+    与 _embed_legacy 的核心区别:
+        _embed_legacy:  Unfold 3×3 → Align_dim → Stack → AdaptiveAvgPool1d  (邻域 + learned 跨层融合)
+        _embed_concat:  Concat channels → reshape                           (纯通道拼接, 无融合)
+
+    .. deprecated::
+        逻辑已迁移至 myAD.FeatureAggregator._aggregate_channel_concat()。
+        保留此函数仅供向后兼容, 新代码请使用 FeatureAggregator。
+    
+
+    Args:
+        features:  dict, {layer_idx: tensor [B, C, H, W]}
+        layers:    list, 要使用的层索引, 如 [0, 1, 2, 3]
+        output_size: int, 输出每个 patch 的维度 (通常 = C * len(layers))
+
+    Returns:
+        patches_features: [B*H*W, output_size] 聚合后的逐点特征
+        patch_shapes:     [[H, W], ...] 与 _embed_legacy 接口兼容
+
+    Example:
+        # DINOv2 4层, 每层 [B, 384, 37, 37]
+        # output_size = 384 * 4 = 1536
+        feats, shapes = _embed_channel_concat(
+            features={0: F0, 1: F1, 2: F2, 3: F3},
+            layers=[0, 1, 2, 3],
+            output_size=1536,
+        )
+        # feats: [B*1369, 1536]
+        # shapes: [[37, 37], [37, 37], [37, 37], [37, 37]]
+    """
+    # 收集并拼接各层特征: [B, C1, H, W], [B, C2, H, W], ... → [B, ΣC, H, W]
+    layer_feats = [features[idx] for idx in layers]
+    concat_features = torch.cat(layer_feats, dim=1)  # [B, output_size, H, W]
+
+    B, C, H, W = concat_features.shape
+
+    # 空间维度展平到 batch 维度
+    # [B, C, H, W] → [B, H, W, C] → [B*H*W, C]
+    patches = concat_features.permute(0, 2, 3, 1).reshape(B * H * W, C)
+
+    # 兼容 _embed_legacy 的返回格式
+    patch_shapes = [[H, W]] * len(layers)
+
+    return patches, patch_shapes
 

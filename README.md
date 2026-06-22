@@ -96,7 +96,7 @@ python src/analysis/aggregate_results.py --csv
 │   │   ├── __init__.py              #   Unified API: get_dataloader()
 │   │   ├── mvtec.py                 #   MVTec AD dataset
 │   │   └── visa.py                  #   VisA dataset
-│   ├── utils.py                     # Metrics, logging, feature aggregation, DINOv2 loader
+│   ├── utils.py                     # Metrics, logging, FeatureAggregator (legacy), DINOv2 loader
 │   ├── perlin.py                    # Perlin noise mask generation
 │   ├── config.py                    # TOML → ModelConfig parser
 │   └── commen_import.py             # Shared third-party imports
@@ -178,7 +178,7 @@ Export end-to-end ONNX models for inference without PyTorch:
   Input [B, 3, 518, 518]
     ↓ Frozen DINOv2 ViT-S/14 (layers [2,5,8,11])
   Multi-layer features × 4
-    ↓ _embed_legacy aggregation
+    ↓ FeatureAggregator (neighborhood / channel_concat)
   Feature patches [B*H*W, 1536]
     ↓ PCA foreground mask (PCA Student or SVD)
   Foreground features [N, 1536]
@@ -191,7 +191,7 @@ Export end-to-end ONNX models for inference without PyTorch:
 Inference:
 
 ```
-Test image → DINOv2 → aggregate → PCA mask → Projection → Discriminator → negative score
+Test image → DINOv2 → FeatureAggregator → PCA mask → Projection → Discriminator → negative score
                                                                                   ↓
                                                           Upsample + Gaussian blur → heatmap
 ```

@@ -29,6 +29,7 @@ def build_model_config(cfg: dict, device: str = "cuda") -> ModelConfig:
         layer_indices=list(arch["layer_indices"]),
         input_planes=arch["input_planes"],
         hidden_dim=arch["hidden_dim"],
+        aggregation_type=arch.get("aggregation_type", "neighborhood"),
         meta_epochs=train["meta_epochs"],
         gan_epochs=train["gan_epochs"],
         batch_size=train["batch_size"],

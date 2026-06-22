@@ -265,7 +265,13 @@ def train_category(
     default=False,
     help='消融: 关闭所有数据增强'
 )
-def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment):
+@click.option(
+    '--aggregation',
+    type=click.Choice(['neighborhood', 'channel_concat']),
+    default=None,
+    help='特征聚合方式 (消融实验): neighborhood (默认, 邻域聚合) 或 channel_concat (通道拼接)'
+)
+def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment, aggregation):
     """主函数"""
     # 将 click 返回的字符串按空格分割为列表
     categories = categories.strip().split()
@@ -326,6 +332,12 @@ def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no
     if ablation_tags:
         config.ablation_tag = "_" + "_".join(ablation_tags)
         print(f"[ABLATION] Active tags: {', '.join(ablation_tags)}")
+    if aggregation is not None:
+        config.aggregation_type = aggregation
+        config.ablation_tag += f"_agg-{aggregation}" if config.ablation_tag else f"_agg-{aggregation}"
+        print(f"[ABLATION] Aggregation type: {aggregation}")
+    if ablation_tags or aggregation is not None:
+        print(f"[ABLATION] Checkpoint tag: {config.ablation_tag}")
     # ================================
 
     # 记录总体结果

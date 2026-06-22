@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict
 from commen_import import *
-from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retrieval_metrics, _embed_legacy, init_weight, download_dinov2_models, _safe_roc_auc
+from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retrieval_metrics, init_weight, download_dinov2_models, _safe_roc_auc
 from sklearn.decomposition import PCA
 import scipy.ndimage as ndimage
 import cv2
@@ -65,6 +65,9 @@ class ModelConfig:
     # 消融实验标记
     ablation_tag: str = ""              # 消融变体标识，用于 checkpoint/log 命名
 
+    # 特征聚合方式
+    aggregation_type: str = "neighborhood"  # "neighborhood" (当前, _embed_legacy) 或 "channel_concat" (消融 B4, _embed_channel_concat)
+
     # Scheduler 配置
     use_scheduler: bool = True          # 是否使用学习率调度器
     scheduler_type: str = "cosine"      # 调度器类型: "cosine" (CosineAnnealingLR) 或 "multistep" (MultiStepLR)
@@ -83,30 +86,160 @@ class ModelConfig:
         if self.multistep_milestones is None:
             self.multistep_milestones = [0.8, 0.9]
 
+
+# ═══════════════════════════════════════════════════════════════════
+# 特征聚合器 — 所有聚合方法集中在一个类中, 新增方法加私有函数即可
+# ═══════════════════════════════════════════════════════════════════
+
+class FeatureAggregator(torch.nn.Module):
+    """特征聚合器 — 将 DINOv2 多层特征图聚合为 patch 特征向量。
+
+    支持多种聚合策略, 通过 method 参数切换。新增方法: 添加一个
+    _aggregate_xxx() 私有方法, 在 __init__ 的 _METHODS 注册, forward() 加分支。
+
+    Available methods:
+        "neighborhood"   — 3×3 邻域 Unfold + Align_dim + Stack + AdaptiveAvgPool1d (默认)
+        "channel_concat" — 通道维直接拼接, 无邻域无跨层融合 (消融 B4)
+
+    Usage:
+        agg = FeatureAggregator(input_dim=384, num_layers=4, method="neighborhood")
+        patches = agg(layer_features)  # layer_features: list of [B,384,H,W]
+
+    Args:
+        input_dim:  每层特征通道数 (DINOv2 ViT-S/14 = 384)
+        num_layers: 使用的层数 (默认 4)
+        method:     聚合策略名称
+        patch_size: Unfold 窗口大小, 仅 "neighborhood" 使用 (默认 3)
+        stride:     Unfold 步长, 仅 "neighborhood" 使用 (默认 1)
+    """
+
+    _METHODS = {"neighborhood", "channel_concat"}
+
+    def __init__(self, input_dim=384, num_layers=4,
+                 method="neighborhood",
+                 patch_size=3, stride=1):
+        super().__init__()
+        if method not in self._METHODS:
+            raise ValueError(
+                f"Unknown aggregation method: '{method}'. "
+                f"Available: {sorted(self._METHODS)}"
+            )
+        self.input_dim = input_dim
+        self.num_layers = num_layers
+        self.output_dim = input_dim * num_layers  # 384 * 4 = 1536
+        self.method = method
+        self.patch_size = patch_size
+        self.stride = stride
+
+    def forward(self, layer_features):
+        """聚合多层特征 → patch 向量。
+
+        Args:
+            layer_features: list of [B, C, H, W], [layer0, layer1, ...]
+        Returns:
+            patches: [B*H*W, output_dim]
+        """
+        if self.method == "neighborhood":
+            return self._aggregate_neighborhood(layer_features)
+        elif self.method == "channel_concat":
+            return self._aggregate_channel_concat(layer_features)
+        raise ValueError(f"Unknown method: {self.method}")
+
+    def extra_repr(self):
+        return (f"input_dim={self.input_dim}, num_layers={self.num_layers}, "
+                f"output_dim={self.output_dim}, method='{self.method}'")
+
+    # ─────────────────────────────────────────────────────────
+    #  聚合策略 (新增方法写在这里)
+    # ─────────────────────────────────────────────────────────
+
+    def _aggregate_neighborhood(self, layer_features):
+        """邻域聚合 + 跨层 learned pool (等价 _embed_legacy)。
+
+        Unfold 3×3 → Align_dim → Stack → AdaptiveAvgPool1d
+        """
+        B, C, H, W = layer_features[0].shape
+        target_dim = self.output_dim
+        output_size = self.output_dim
+
+        align_features = []
+        for feat in layer_features:
+            unfolded = self._patchify(feat)
+            aligned = self._align_dim(unfolded, target_dim)
+            align_features.append(aligned)
+
+        # Stack layers → flatten → AdaptiveAvgPool1d
+        stacked = torch.stack(align_features, dim=1)              # [B*N, L, D]
+        stacked = stacked.reshape(stacked.shape[0], 1, -1)        # [B*N, 1, L*D]
+        pooled = F.adaptive_avg_pool1d(stacked, output_size)      # [B*N, 1, D]
+        return pooled.reshape(pooled.shape[0], -1)                # [B*N, D]
+
+    def _aggregate_channel_concat(self, layer_features):
+        """通道拼接 (等价 _embed_channel_concat)。
+
+        无 patchify, 无 Align_dim, 无跨层 pool — 纯通道 concat。
+        """
+        concat = torch.cat(layer_features, dim=1)                # [B, D, H, W]
+        B, C, H, W = concat.shape
+        return concat.permute(0, 2, 3, 1).reshape(B * H * W, C)  # [B*H*W, D]
+
+    # ─────────────────────────────────────────────────────────
+    #  共享工具 (供聚合策略内部调用)
+    # ─────────────────────────────────────────────────────────
+
+    def _patchify(self, feature):
+        """Unfold 提取邻域 patch: [B,C,H,W] → [B,N,C,ps,ps]"""
+        ps = self.patch_size
+        padding = (ps - 1) // 2
+        unfolder = torch.nn.Unfold(
+            kernel_size=ps, stride=self.stride,
+            padding=padding, dilation=1,
+        )
+        unfolded = unfolder(feature)
+        return unfolded.reshape(
+            *feature.shape[:2], ps, ps, -1
+        ).permute(0, 4, 1, 2, 3)
+
+    def _align_dim(self, feature, target_dim):
+        """patch 展平 + AdaptiveAvgPool1d: [B,N,C,ps,ps] → [B*N, target_dim]"""
+        _f = feature.reshape(-1, *feature.shape[2:])          # [B*N, C, ps, ps]
+        _f = _f.reshape(len(_f), -1).unsqueeze(1)              # [B*N, 1, C*ps*ps]
+        _f = F.adaptive_avg_pool1d(_f, target_dim)             # [B*N, 1, D]
+        return _f.squeeze(1)                                   # [B*N, D]
+
+
 # 复用组件--特征提取器
 class FeatureExtractor(torch.nn.Module):
-    """特征提取器 - 封装 DINOv2 和特征聚合"""
-    
+    """特征提取器 - 封装 DINOv2 和 FeatureAggregator 聚合"""
+
     def __init__(
         self,
-        model_path: str, # 模型的路径
-        layer_indices: List[int], # 要使用的对应层
-        patch_size: int = 3, # 每个patch块的分辨率
-        device: str = "cuda", # 使用的设备
+        model_path: str,
+        layer_indices: List[int],
+        aggregator: FeatureAggregator = None,
+        device: str = "cuda",
     ):
         super().__init__()
         self.layer_indices = layer_indices
-        self.patch_size = patch_size
         self.device = device
 
-        # 加载编码器
+        # 聚合器: 可传入自定义实例, 默认用 NeighborhoodAggregation
+        if aggregator is None:
+            C = 384  # DINOv2 ViT-S/14 per-layer dim
+            self.aggregator = FeatureAggregator(
+                input_dim=C, num_layers=len(layer_indices), method="neighborhood",
+            )
+        else:
+            self.aggregator = aggregator
+
+        # 加载编码器 (向后兼容: export_onnx.py 直接访问 self.encoder)
         self.encoder = self._load_encoder(model_path).to(self.device)
         self.encoder.eval()
 
         # 冻结参数
         for param in self.encoder.parameters():
             param.requires_grad = False
-            
+
     def _load_encoder(self, model_path: str):
         return download_dinov2_models(
             name='dinov2_vits14_reg',
@@ -114,30 +247,16 @@ class FeatureExtractor(torch.nn.Module):
             model_pth=model_path,
             pretrained=True
         )
-    
-    # 前向传播过程--dinov2提取特征 + _embed_legacy特征聚合
+
     def forward(self, images: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
         """
-        返回: (patches_features, (H, W))
-        patches_features: [B*H*W, C] 聚合后的特征
+        Returns:
+            patches_features: [B*H*W, C] 聚合后的特征
+            (H, W): 特征图空间尺寸
         """
-        # 提取多层特征
         layer_features = self._extract_layer_features(images)
-
         B, C, H, W = layer_features[0].shape
-
-        # 聚合多层特征
-        features_dict = {idx: feat for idx, feat in enumerate(layer_features)}
-        patches_features, _ = _embed_legacy(
-            features_dict,
-            layers=list(range(len(self.layer_indices))),
-            patchsize=self.patch_size,
-            stride=1,
-            target_patches=H * W,
-            target_dim=C * len(self.layer_indices), # 384 * 4 = 1536
-            output_size=C * len(self.layer_indices) # 384 * 4 = 1536
-        )  # [B*H*W, C]
-
+        patches_features = self.aggregator(layer_features)
         return patches_features, (H, W)
 
     def _extract_layer_features(self, image_tensor):
@@ -1261,11 +1380,19 @@ class DINOv2AnomalyDetector:
         self.model_path = model_path  # 保存路径以便 load 时重建组件
         
         # 初始化组件
-        # 特征提取器 - 封装 DINOv2 和特征聚合
+        # 特征提取器 - 封装 DINOv2 和 FeatureAggregator
+        agg_type = getattr(self.config, 'aggregation_type', 'neighborhood')
+        C_input = self.config.input_planes // len(self.config.layer_indices)  # 384
+        aggregator = FeatureAggregator(
+            input_dim=C_input,
+            num_layers=len(self.config.layer_indices),
+            method=agg_type,
+            patch_size=self.config.patch_size,
+        )
         self.feature_extractor = FeatureExtractor(
             model_path=model_path,
             layer_indices=self.config.layer_indices,
-            patch_size=self.config.patch_size,
+            aggregator=aggregator,
             device=self.config.device,
         )
         
