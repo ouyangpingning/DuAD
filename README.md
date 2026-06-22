@@ -13,7 +13,7 @@ Unsupervised industrial visual anomaly detection using frozen DINOv2 (`dinov2_vi
 ### Clone
 
 ```bash
-git clone --recurse-submodules git@github.com:ouyangpingning/DuAD.git
+git clone --recurse-submodules https://github.com/ouyangpingning/DuAD.git
 
 # If already cloned but missing facebookresearch_dinov2_main/
 git submodule init && git submodule update

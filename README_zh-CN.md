@@ -10,7 +10,7 @@
 
 ```bash
 # 含子模块（DINOv2）
-git clone --recurse-submodules git@github.com:ouyangpingning/DuAD.git
+git clone --recurse-submodules https://github.com/ouyangpingning/DuAD.git
 
 # 如果已克隆但缺少 facebookresearch_dinov2_main/
 git submodule init && git submodule update
