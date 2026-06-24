@@ -3,20 +3,23 @@
 # 消融实验批量训练脚本 — 4-shot MVTec AD, 5 seeds (0, 42, 123, 456, 789)
 #
 # 用法:
-#   bash train_ablation.sh dino2_only    # B: DINOv2 单分支 (无 PCA, 无 Perlin)
-#   bash train_ablation.sh pca_only      # C: DINOv2 + PCA (无 Perlin)
-#   bash train_ablation.sh no_augment    # E: Full DuAD 无数据增强
-#   bash train_ablation.sh all           # 依次运行以上三个
+#   bash train_ablation.sh dino2_only       # B: DINOv2 单分支 (无 PCA, 无 Perlin)
+#   bash train_ablation.sh pca_only         # C: DINOv2 + PCA (无 Perlin)
+#   bash train_ablation.sh no_augment       # E: Full DuAD 无数据增强
+#   bash train_ablation.sh channel_concat   # F: 通道拼接聚合 (替代邻域聚合)
+#   bash train_ablation.sh all              # 依次运行以上四个
 #
 # 对应关系:
-#   dino2_only  → --no_pca_mask           (自动关闭 Perlin，回退单分支 Hinge)
-#   pca_only    → --no_perlin_mask         (保留 PCA，单分支 Hinge，无 Perlin)
-#   no_augment  → --no_augment             (PCA+Perlin 双分支，无数据增强)
+#   dino2_only     → --no_pca_mask                (自动关闭 Perlin，回退单分支 Hinge)
+#   pca_only       → --no_perlin_mask              (保留 PCA，单分支 Hinge，无 Perlin)
+#   no_augment     → --no_augment                  (PCA+Perlin 双分支，无数据增强)
+#   channel_concat → --aggregation channel_concat   (通道拼接替代 3×3 邻域聚合)
 #
 # checkpoint/log 命名示例:
-#   bottle_k4_s0_noPCA_best_ckpt.pth     (dino2_only)
-#   bottle_k4_s0_noPerlin_best_ckpt.pth  (pca_only)
-#   bottle_k4_s0_noAug_best_ckpt.pth     (no_augment)
+#   bottle_k4_s0_noPCA_best_ckpt.pth               (dino2_only)
+#   bottle_k4_s0_noPerlin_best_ckpt.pth            (pca_only)
+#   bottle_k4_s0_noAug_best_ckpt.pth               (no_augment)
+#   bottle_k4_s0_agg-channel_concat_best_ckpt.pth  (channel_concat)
 # =============================================================================
 
 set -e
@@ -26,13 +29,15 @@ if [ $# -eq 0 ]; then
     echo "用法: bash train_ablation.sh <variant>"
     echo ""
     echo "可用的消融变体:"
-    echo "  dino2_only   — DINOv2 单分支 (无 PCA, 无 Perlin, 有增强)"
-    echo "  pca_only     — DINOv2 + PCA (无 Perlin, 有增强)"
-    echo "  no_augment   — Full DuAD 无数据增强"
-    echo "  all          — 依次运行以上三个变体"
+    echo "  dino2_only      — DINOv2 单分支 (无 PCA, 无 Perlin, 有增强)"
+    echo "  pca_only        — DINOv2 + PCA (无 Perlin, 有增强)"
+    echo "  no_augment      — Full DuAD 无数据增强"
+    echo "  channel_concat  — 通道拼接聚合 (替代 3×3 邻域聚合)"
+    echo "  all             — 依次运行以上四个变体"
     echo ""
     echo "示例:"
     echo "  bash train_ablation.sh dino2_only"
+    echo "  bash train_ablation.sh channel_concat"
     echo "  bash train_ablation.sh all"
     exit 1
 fi
@@ -52,12 +57,16 @@ case "$VARIANT" in
         ABLATION_FLAG="--no_augment"
         ABLATION_LABEL="Full DuAD without augmentation"
         ;;
+    channel_concat)
+        ABLATION_FLAG="--aggregation channel_concat"
+        ABLATION_LABEL="Channel concat aggregation (no neighborhood)"
+        ;;
     all)
         echo "================================================"
-        echo "  消融实验 — 依次运行全部 3 个变体"
+        echo "  消融实验 — 依次运行全部 4 个变体"
         echo "================================================"
         echo ""
-        for v in dino2_only pca_only no_augment; do
+        for v in dino2_only pca_only no_augment channel_concat; do
             echo ">>> 开始运行: $v"
             bash "$0" "$v"
             echo ""
@@ -71,7 +80,7 @@ case "$VARIANT" in
         ;;
     *)
         echo "错误: 未知的消融变体 '$VARIANT'"
-        echo "可用: dino2_only, pca_only, no_augment, all"
+        echo "可用: dino2_only, pca_only, no_augment, channel_concat, all"
         exit 1
         ;;
 esac
