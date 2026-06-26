@@ -1,5 +1,13 @@
-torch>=2.0.0
-torchvision>=0.15.0
+# PyTorch (CUDA 12.4) — 注意: 必须使用 PyTorch 官方 CUDA 索引安装,
+# 否则 pip 默认安装的 torch 可能不兼容你的 CUDA 驱动。
+# 先单独安装 torch，再安装其余依赖:
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt
+#
+# 如果你的驱动不支持 CUDA 12.4, 参照 https://pytorch.org/get-started/locally/ 选择对应版本。
+torch>=2.0.0,<2.7
+torchvision>=0.15.0,<0.22
 transformers>=4.30.0
 scikit-learn>=1.2.0
 opencv-python-headless>=4.7.0

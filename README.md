@@ -22,8 +22,14 @@ git submodule init && git submodule update
 ### Install
 
 ```bash
+# 1. 先安装 PyTorch (必须用 CUDA 索引，否则可能装成 CPU 版本)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# 2. 再安装其余依赖
 pip install -r requirements.txt
 ```
+
+> **CUDA 兼容性**: 如果你的 CUDA 驱动版本不同，在 https://pytorch.org/get-started/locally/ 选择对应的 `--index-url`。当前仓库使用 CUDA 12.4（兼容驱动 ≥ 525）。
 
 Core dependencies: `torch>=2.0`, `scikit-learn`, `opencv-python-headless`, `matplotlib`, `tomli`
 

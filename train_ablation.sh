@@ -1,100 +1,105 @@
 #!/bin/bash
 # =============================================================================
-# 消融实验批量训练脚本 — 4-shot MVTec AD, 5 seeds (0, 42, 123, 456, 789)
+# 消融实验批量训练脚本 (交互式) — MVTec AD
 #
 # 用法:
-#   bash train_ablation.sh dino2_only       # B: DINOv2 单分支 (无 PCA, 无 Perlin)
-#   bash train_ablation.sh pca_only         # C: DINOv2 + PCA (无 Perlin)
-#   bash train_ablation.sh no_augment       # E: Full DuAD 无数据增强
-#   bash train_ablation.sh channel_concat   # F: 通道拼接聚合 (替代邻域聚合)
-#   bash train_ablation.sh all              # 依次运行以上四个
+#   bash train_ablation.sh
 #
-# 对应关系:
-#   dino2_only     → --no_pca_mask                (自动关闭 Perlin，回退单分支 Hinge)
-#   pca_only       → --no_perlin_mask              (保留 PCA，单分支 Hinge，无 Perlin)
-#   no_augment     → --no_augment                  (PCA+Perlin 双分支，无数据增强)
-#   channel_concat → --aggregation channel_concat   (通道拼接替代 3×3 邻域聚合)
-#
-# checkpoint/log 命名示例:
-#   bottle_k4_s0_noPCA_best_ckpt.pth               (dino2_only)
-#   bottle_k4_s0_noPerlin_best_ckpt.pth            (pca_only)
-#   bottle_k4_s0_noAug_best_ckpt.pth               (no_augment)
-#   bottle_k4_s0_agg-channel_concat_best_ckpt.pth  (channel_concat)
+#   运行后按提示交互选择: 消融变体 → K-Shot → 种子 → 类别
 # =============================================================================
 
 set -e
 
-# ==================== 参数解析 ====================
-if [ $# -eq 0 ]; then
-    echo "用法: bash train_ablation.sh <variant>"
-    echo ""
-    echo "可用的消融变体:"
-    echo "  dino2_only      — DINOv2 单分支 (无 PCA, 无 Perlin, 有增强)"
-    echo "  pca_only        — DINOv2 + PCA (无 Perlin, 有增强)"
-    echo "  no_augment      — Full DuAD 无数据增强"
-    echo "  channel_concat  — 通道拼接聚合 (替代 3×3 邻域聚合)"
-    echo "  all             — 依次运行以上四个变体"
-    echo ""
-    echo "示例:"
-    echo "  bash train_ablation.sh dino2_only"
-    echo "  bash train_ablation.sh channel_concat"
-    echo "  bash train_ablation.sh all"
-    exit 1
+# ==================== 交互式参数 ====================
+
+echo ""
+echo "================================================"
+echo "  消融实验 — 交互式配置"
+echo "================================================"
+echo ""
+
+# --- 1. 选择消融变体 ---
+echo "请选择消融变体:"
+echo "  1) dino2_only      — DINOv2 单分支 (无 PCA, 无 Perlin)"
+echo "  2) pca_only        — DINOv2 + PCA (无 Perlin)"
+echo "  3) no_augment      — Full DuAD 无数据增强"
+echo "  4) channel_concat  — 通道拼接聚合 (替代邻域聚合)"
+echo ""
+while true; do
+    read -p "输入编号 [1-4]: " variant_choice
+    case "$variant_choice" in
+        1) VARIANT="dino2_only"
+           ABLATION_FLAG="--no_pca_mask"
+           ABLATION_LABEL="DINOv2 single-branch (no PCA, no Perlin)"; break ;;
+        2) VARIANT="pca_only"
+           ABLATION_FLAG="--no_perlin_mask"
+           ABLATION_LABEL="DINOv2 + PCA (no Perlin)"; break ;;
+        3) VARIANT="no_augment"
+           ABLATION_FLAG="--no_augment"
+           ABLATION_LABEL="Full DuAD without augmentation"; break ;;
+        4) VARIANT="channel_concat"
+           ABLATION_FLAG="--aggregation channel_concat"
+           ABLATION_LABEL="Channel concat aggregation (no neighborhood)"; break ;;
+        *) echo "无效输入，请输入 1-4" ;;
+    esac
+done
+echo "  → 已选择: ${ABLATION_LABEL}"
+echo ""
+
+# --- 2. K-Shot ---
+read -p "K-Shot 数量 [默认: 4]: " k_input
+K_SHOT=${k_input:-4}
+echo "  → K-Shot: ${K_SHOT}"
+echo ""
+
+# --- 3. 种子列表 ---
+read -p "种子列表，空格分隔 [默认: 0 42 123 456 789]: " seeds_input
+if [ -z "$seeds_input" ]; then
+    SEEDS=(0 42 123 456 789)
+else
+    SEEDS=($seeds_input)
 fi
+echo "  → 种子: ${SEEDS[@]} (共 ${#SEEDS[@]} 个)"
+echo ""
 
-VARIANT="$1"
+# --- 4. 类别 ---
+echo "MVTec AD 全部 15 类:"
+echo "  bottle cable capsule carpet grid hazelnut leather"
+echo "  metal_nut pill screw tile toothbrush transistor wood zipper"
+echo ""
+read -p "指定类别 (空格分隔, 回车=全部) [默认: 全部]: " cats_input
+if [ -z "$cats_input" ]; then
+    CATEGORIES=(bottle cable capsule carpet grid hazelnut leather
+                metal_nut pill screw tile toothbrush transistor wood zipper)
+else
+    CATEGORIES=($cats_input)
+fi
+echo "  → 类别: ${CATEGORIES[@]} (共 ${#CATEGORIES[@]} 个)"
+echo ""
 
-case "$VARIANT" in
-    dino2_only)
-        ABLATION_FLAG="--no_pca_mask"
-        ABLATION_LABEL="DINOv2 single-branch (no PCA, no Perlin)"
-        ;;
-    pca_only)
-        ABLATION_FLAG="--no_perlin_mask"
-        ABLATION_LABEL="DINOv2 + PCA (no Perlin)"
-        ;;
-    no_augment)
-        ABLATION_FLAG="--no_augment"
-        ABLATION_LABEL="Full DuAD without augmentation"
-        ;;
-    channel_concat)
-        ABLATION_FLAG="--aggregation channel_concat"
-        ABLATION_LABEL="Channel concat aggregation (no neighborhood)"
-        ;;
-    all)
-        echo "================================================"
-        echo "  消融实验 — 依次运行全部 4 个变体"
-        echo "================================================"
-        echo ""
-        for v in dino2_only pca_only no_augment channel_concat; do
-            echo ">>> 开始运行: $v"
-            bash "$0" "$v"
-            echo ""
-            echo "<<< 完成: $v"
-            echo ""
-        done
-        echo "================================================"
-        echo "  全部消融实验完成!"
-        echo "================================================"
-        exit 0
-        ;;
-    *)
-        echo "错误: 未知的消融变体 '$VARIANT'"
-        echo "可用: dino2_only, pca_only, no_augment, channel_concat, all"
-        exit 1
-        ;;
-esac
-
-# ==================== 固定参数 ====================
-K_SHOT=4
-SEEDS=(0 42 123 456 789)
+# --- 5. 确认 ---
 DATASET="mvtec"
+num_categories=${#CATEGORIES[@]}
+num_seeds=${#SEEDS[@]}
+total_tasks=$((num_categories * num_seeds))
 
-# MVTec AD 全部 15 类
-CATEGORIES=(
-    bottle cable capsule carpet grid hazelnut leather
-    metal_nut pill screw tile toothbrush transistor wood zipper
-)
+echo "================================================"
+echo "  配置确认"
+echo "================================================"
+echo "  消融变体:     ${ABLATION_LABEL}"
+echo "  Ablation flag: ${ABLATION_FLAG}"
+echo "  K-Shot:       ${K_SHOT}"
+echo "  种子:         ${SEEDS[@]}"
+echo "  类别:         ${CATEGORIES[@]}"
+echo "  总任务数:     ${num_categories} 类 × ${num_seeds} 种子 = ${total_tasks}"
+echo "================================================"
+echo ""
+read -p "确认开始训练? [Y/n]: " confirm
+if [ "$confirm" = "n" ] || [ "$confirm" = "N" ]; then
+    echo "已取消"
+    exit 0
+fi
+echo ""
 
 # ==================== 环境检测 ====================
 work_env="${CONDA_DEFAULT_ENV:-base}"
@@ -119,10 +124,6 @@ if [ -z "$gpu_free_memory" ]; then
     exit 1
 fi
 
-num_categories=${#CATEGORIES[@]}
-num_seeds=${#SEEDS[@]}
-total_tasks=$((num_categories * num_seeds))
-
 # ==================== 打印配置 ====================
 echo "================================================"
 echo "  消融实验 — 批量训练"
@@ -130,6 +131,7 @@ echo "================================================"
 echo "  消融变体:     ${ABLATION_LABEL}"
 echo "  Ablation flag: ${ABLATION_FLAG}"
 echo "  数据集:       ${DATASET}"
+echo "  训练类别:     ${CATEGORIES[@]}"
 echo "  K-Shot:       ${K_SHOT}"
 echo "  种子数量:     ${num_seeds} (${SEEDS[@]})"
 echo "  类别数量:     ${num_categories}"

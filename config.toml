@@ -108,7 +108,7 @@ pcb4 = 0.2
 # MVTec AD 数据集路径
 mvtec_base_dir = "/root/siton-tmp/mvtec_anomaly_detection" # 数据集的根目录，通常包含所有类别的子目录，每个子目录包含训练和测试图像
 # VisA 数据集路径
-visa_base_dir = "/root/siton-tmp/VisA"
+visa_base_dir = "/root/siton-tmp/VisA/VisA_20220922"
 ckpt_dir = "./model_ckpt" # 模型检查点的保存目录，通常包含训练过程中保存的模型权重文件，以便后续加载和评估
 log_dir = "./model_log" # 日志文件的保存目录，通常包含训练过程中的日志文件，以便后续分析和调试
 dinov2_model_dir = "./facebookresearch_dinov2_main" # DINOv2 模型文件的目录，通常包含预训练的 DINOv2 模型权重文件，以便加载和使用
