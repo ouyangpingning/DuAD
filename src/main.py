@@ -45,6 +45,10 @@ def train_category(
         logger.info(f"Few-shot mode: K={k_shot}, seed={shot_seed}")
     logger.info(f"{'='*60}")
     
+    # 保存全局默认值，离开前恢复，防止跨类别参数泄漏
+    _default_pca_threshold = config.pca_threshold
+    _default_pca_border = config.pca_border
+
     if category_pca_thresholds and atype in category_pca_thresholds:
         config.pca_threshold = category_pca_thresholds[atype]
         logger.info(f"Category-specific PCA threshold for {atype}: {config.pca_threshold}")
@@ -210,7 +214,11 @@ def train_category(
     logger.info(f"  Pixel PRO:   {best_score_full['pixel_pro']:.4f}")
     logger.info(f"Best model saved to: {best_ckpt_path}")
     logger.info(f"{'='*60}")
-    
+
+    # 恢复全局默认值，防止泄漏到下一个类别
+    config.pca_threshold = _default_pca_threshold
+    config.pca_border = _default_pca_border
+
     return {
         'category': atype,
         'best_epoch': best_epoch,

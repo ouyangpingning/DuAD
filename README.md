@@ -25,7 +25,9 @@ git submodule init && git submodule update
 pip install -r requirements.txt
 ```
 
-Core dependencies: `torch>=2.0`, `scikit-learn`, `opencv-python`, `matplotlib`, `tomli`
+Core dependencies: `torch>=2.0`, `scikit-learn`, `opencv-python-headless`, `matplotlib`, `tomli`
+
+> **Note for server users:** We use `opencv-python-headless` (no GUI dependencies) instead of `opencv-python`. If you need GUI features (e.g., `cv2.imshow`), replace with `opencv-python` and install system libs: `apt install libgl1-mesa-glx`.
 
 ### Prepare Data
 
