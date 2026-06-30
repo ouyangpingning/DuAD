@@ -174,10 +174,16 @@ while [ $task_cursor -lt $total_tasks ]; do
     # 构建命令 — 入口改为 simplenet/main.py
     if [ "$mode_choice" == "2" ]; then
         cmd_args="--categories \"${session_cats}\" --k_shot ${k_shot} --shot_seed ${current_seed} --dataset ${dataset}"
-        session_name="sn_${dataset}_k${k_shot}_s${current_seed}_g${session_num}"
+        session_name="sn_${dataset}_$(date +%m%d_%H%M)_k${k_shot}_s${current_seed}_g${session_num}"
     else
         cmd_args="--categories \"${session_cats}\" --dataset ${dataset}"
-        session_name="sn_${dataset}_g${session_num}"
+        session_name="sn_${dataset}_$(date +%m%d_%H%M)_g${session_num}"
+    fi
+
+    # 安全检查: 同名 session 已存在则跳过
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "⚠ 跳过: session '${session_name}' 已存在"
+        continue
     fi
 
     echo "创建 tmux 会话: ${session_name}"

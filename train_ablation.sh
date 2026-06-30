@@ -24,9 +24,10 @@ echo "  1) dino2_only      — DINOv2 单分支 (无 PCA, 无 Perlin)"
 echo "  2) pca_only        — DINOv2 + PCA (无 Perlin)"
 echo "  3) no_augment      — Full DuAD 无数据增强"
 echo "  4) channel_concat  — 通道拼接聚合 (替代邻域聚合)"
+echo "  5) pca_student     — PCA Student MLP 掩模 (替代 SVD)"
 echo ""
 while true; do
-    read -p "输入编号 [1-4]: " variant_choice
+    read -p "输入编号 [1-5]: " variant_choice
     case "$variant_choice" in
         1) VARIANT="dino2_only"
            ABLATION_FLAG="--no_pca_mask"
@@ -40,7 +41,10 @@ while true; do
         4) VARIANT="channel_concat"
            ABLATION_FLAG="--aggregation channel_concat"
            ABLATION_LABEL="Channel concat aggregation (no neighborhood)"; break ;;
-        *) echo "无效输入，请输入 1-4" ;;
+        5) VARIANT="pca_student"
+           ABLATION_FLAG="--use_pca_student"
+           ABLATION_LABEL="PCA Student MLP mask (instead of SVD)"; break ;;
+        *) echo "无效输入，请输入 1-5" ;;
     esac
 done
 echo "  → 已选择: ${ABLATION_LABEL}"
@@ -183,12 +187,26 @@ done
 
 # ==================== 创建 tmux 会话 ====================
 VARIANT_SHORT="${VARIANT//_/-}"
+RUN_TS=$(date +%m%d_%H%M)  # 时间戳确保每次运行 session 名不冲突
 session_num=0
 task_cursor=0
 
 while [ $task_cursor -lt $total_tasks ]; do
     session_num=$((session_num + 1))
-    session_name="abl_${VARIANT_SHORT}_k${K_SHOT}_g${session_num}"
+    session_name="abl_${RUN_TS}_${VARIANT_SHORT}_k${K_SHOT}_g${session_num}"
+
+    # 安全检查: 同名 session 已存在则跳过 (理论上不会，但兜底)
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "⚠ 跳过: session '${session_name}' 已存在"
+        # 跳过当前 session 配额内的任务
+        tasks_this_session=${session_quota[$((session_num - 1))]}
+        skipped=0
+        while [ $task_cursor -lt $total_tasks ] && [ $skipped -lt $tasks_this_session ]; do
+            task_cursor=$((task_cursor + 1))
+            skipped=$((skipped + 1))
+        done
+        continue
+    fi
 
     # 收集当前 session 的任务
     declare -A seed_cats
@@ -217,7 +235,7 @@ while [ $task_cursor -lt $total_tasks ]; do
     else
         seed_label="s${session_seeds[0]}-s${session_seeds[-1]}"
     fi
-    session_name="abl_${VARIANT_SHORT}_k${K_SHOT}_${seed_label}_g${session_num}"
+    session_name="abl_${RUN_TS}_${VARIANT_SHORT}_k${K_SHOT}_${seed_label}_g${session_num}"
 
     echo "创建 tmux: ${session_name}  (${session_task_count} 任务)"
     for s in "${session_seeds[@]}"; do

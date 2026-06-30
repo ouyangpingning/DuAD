@@ -195,9 +195,18 @@ while [ $task_cursor -lt $total_tasks ]; do
     fi
 
     if [ "$mode_choice" == "2" ]; then
-        session_name="${dataset}_k${k_shot}_${seed_label}_g${session_num}"
+        session_name="${dataset}_$(date +%m%d_%H%M)_k${k_shot}_${seed_label}_g${session_num}"
     else
-        session_name="${dataset}_g${session_num}"
+        session_name="${dataset}_$(date +%m%d_%H%M)_g${session_num}"
+    fi
+
+    # 安全检查: 同名 session 已存在则跳过
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "⚠ 跳过: session '${session_name}' 已存在"
+        task_cursor=$((task_cursor + session_task_count))
+        unset seed_cats
+        unset session_seeds
+        continue
     fi
 
     echo "创建 tmux 会话: ${session_name}"

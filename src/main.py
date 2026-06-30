@@ -279,7 +279,13 @@ def train_category(
     default=None,
     help='特征聚合方式 (消融实验): neighborhood (默认, 邻域聚合) 或 channel_concat (通道拼接)'
 )
-def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment, aggregation):
+@click.option(
+    '--use_pca_student',
+    is_flag=True,
+    default=False,
+    help='消融: 使用 PCA Student MLP 生成掩模 (替代 SVD)'
+)
+def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment, aggregation, use_pca_student):
     """主函数"""
     # 将 click 返回的字符串按空格分割为列表
     categories = categories.strip().split()
@@ -344,7 +350,11 @@ def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no
         config.aggregation_type = aggregation
         config.ablation_tag += f"_agg-{aggregation}" if config.ablation_tag else f"_agg-{aggregation}"
         print(f"[ABLATION] Aggregation type: {aggregation}")
-    if ablation_tags or aggregation is not None:
+    if use_pca_student:
+        config.use_pca_student = True
+        config.ablation_tag += "_pcaStudent" if config.ablation_tag else "_pcaStudent"
+        print("[ABLATION] PCA Student ENABLED (MLP mask instead of SVD)")
+    if ablation_tags or aggregation is not None or use_pca_student:
         print(f"[ABLATION] Checkpoint tag: {config.ablation_tag}")
     # ================================
 
