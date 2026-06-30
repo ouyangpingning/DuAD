@@ -5,6 +5,7 @@ from utils import compute_imagewise_retrieval_metrics, compute_pixelwise_retriev
 from sklearn.decomposition import PCA
 import scipy.ndimage as ndimage
 import cv2
+from torchvision.transforms import GaussianBlur
 
 @dataclass
 # 模型配置类--用于配置模型的参数
@@ -131,6 +132,13 @@ class FeatureAggregator(torch.nn.Module):
         self.patch_size = patch_size
         self.stride = stride
 
+        # 预创建 Unfold 算子，避免每次 forward 重复分配
+        padding = (patch_size - 1) // 2
+        self.unfolder = torch.nn.Unfold(
+            kernel_size=patch_size, stride=stride,
+            padding=padding, dilation=1,
+        )
+
     def forward(self, layer_features):
         """聚合多层特征 → patch 向量。
 
@@ -189,15 +197,9 @@ class FeatureAggregator(torch.nn.Module):
 
     def _patchify(self, feature):
         """Unfold 提取邻域 patch: [B,C,H,W] → [B,N,C,ps,ps]"""
-        ps = self.patch_size
-        padding = (ps - 1) // 2
-        unfolder = torch.nn.Unfold(
-            kernel_size=ps, stride=self.stride,
-            padding=padding, dilation=1,
-        )
-        unfolded = unfolder(feature)
+        unfolded = self.unfolder(feature)
         return unfolded.reshape(
-            *feature.shape[:2], ps, ps, -1
+            *feature.shape[:2], self.patch_size, self.patch_size, -1
         ).permute(0, 4, 1, 2, 3)
 
     def _align_dim(self, feature, target_dim):
@@ -711,12 +713,10 @@ class Trainer:
             skip_categories=config.pca_skip_categories # 指定跳过的类别
         ) if config.use_pca_mask else None
 
-        # 收集需要训练的参数：投影器 + 判别器
-        trainable_params = list(projection.parameters()) + list(discriminator.parameters())
-        
         # 优化器
+        # 注意: optimizer_proj 只管理 projection；discriminator 由 optimizer_dsc 独立管理
         self.optimizer_proj = torch.optim.AdamW(
-            trainable_params, 
+            projection.parameters(),
             lr=config.proj_lr * 0.1,
             weight_decay=1e-5
         )
@@ -1254,7 +1254,11 @@ class Predictor:
             use_gpu=config.pca_use_gpu, # 使用GPU加速
             skip_categories=config.pca_skip_categories # 指定跳过的类别
         ) if config.use_pca_mask else None
-        
+
+        # 预创建高斯模糊算子，避免推理时逐图 cv2.GaussianBlur CPU 往返
+        # kernel_size=25 等价于 cv2.GaussianBlur(..., (0,0), sigmaX=4) 的自动计算
+        self.blur = GaussianBlur(kernel_size=25, sigma=4)
+
         self._eval_mode()
     
     def _eval_mode(self):
@@ -1334,23 +1338,21 @@ class Predictor:
         return all_scores, all_masks, all_labels, all_masks_gt
     
     def _upsample_masks(self, patch_scores: np.ndarray) -> List[np.ndarray]:
-        """上采样到目标尺寸"""
+        """上采样到目标尺寸 + GPU 批量高斯平滑"""
         B, H, W = patch_scores.shape
         scores_tensor = torch.from_numpy(patch_scores).unsqueeze(1).float()
-        
+
         upsampled = F.interpolate(
             scores_tensor,
             size=(self.config.target_size, self.config.target_size),
             mode='bilinear',
             align_corners=False
-        ).squeeze(1)
-        
-        # 高斯平滑
-        masks = upsampled.numpy()
-        return [
-            cv2.GaussianBlur(m, (0, 0), sigmaX=4)
-            for m in masks
-        ]
+        )  # [B, 1, target_size, target_size]
+
+        # GPU 批量高斯平滑，替代逐图 cv2.GaussianBlur CPU 往返
+        blurred = self.blur(upsampled)  # [B, 1, target_size, target_size]
+        masks = blurred.cpu().numpy()
+        return [m for m in masks]
     
     def _aggregate_max(self, patch_scores: np.ndarray) -> np.ndarray:
         """最大值聚合"""
