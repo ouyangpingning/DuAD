@@ -279,8 +279,18 @@ class CategoryVisualizer:
             axes[i, 0].set_title(f'[{label_str}] Original Image', fontsize=11)
             axes[i, 0].axis('off')
 
-            axes[i, 1].imshow(r['gt_mask'], cmap='gray')
-            axes[i, 1].set_title(f'[{label_str}] Ground Truth Mask', fontsize=11)
+            # 原图 + GT 标签掩码 (红色, 50% 透明度)
+            gt_mask_up = cv2.resize(
+                r['gt_mask'].astype(np.float32),
+                (target_size, target_size),
+                interpolation=cv2.INTER_NEAREST)
+            gt_mask_binary = gt_mask_up > 0.5
+            axes[i, 1].imshow(r['img_np'])
+            # 构建 RGBA 叠加层：缺陷区域红色 50% 透明，正常区域完全透明
+            overlay = np.zeros((target_size, target_size, 4), dtype=np.float32)
+            overlay[gt_mask_binary] = [1, 0, 0, 0.5]  # RGBA: red, 50% alpha
+            axes[i, 1].imshow(overlay)
+            axes[i, 1].set_title(f'[{label_str}] GT Mask Overlay', fontsize=11)
             axes[i, 1].axis('off')
 
             axes[i, 2].imshow(r['img_np'], alpha=1.0)

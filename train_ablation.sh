@@ -66,23 +66,43 @@ fi
 echo "  → 种子: ${SEEDS[@]} (共 ${#SEEDS[@]} 个)"
 echo ""
 
-# --- 4. 类别 ---
-echo "MVTec AD 全部 15 类:"
-echo "  bottle cable capsule carpet grid hazelnut leather"
-echo "  metal_nut pill screw tile toothbrush transistor wood zipper"
+# --- 4. 数据集 ---
+echo "选择数据集:"
+echo "  1) MVTec AD (15 类)"
+echo "  2) VisA (12 类)"
+echo ""
+while true; do
+    read -p "输入编号 [1-2, 默认: 1]: " dataset_choice
+    dataset_choice=${dataset_choice:-1}
+    case "$dataset_choice" in
+        1) DATASET="mvtec"
+           DEFAULT_CATS=(bottle cable capsule carpet grid hazelnut leather
+                          metal_nut pill screw tile toothbrush transistor wood zipper)
+           break ;;
+        2) DATASET="visa"
+           DEFAULT_CATS=(candle capsules cashew chewinggum fryum macaroni1 macaroni2
+                          pcb1 pcb2 pcb3 pcb4 pipe_fryum)
+           break ;;
+        *) echo "无效输入，请输入 1-2" ;;
+    esac
+done
+echo "  → 数据集: ${DATASET}"
+echo ""
+
+# --- 5. 类别 ---
+echo "${DATASET} 默认类别 (${#DEFAULT_CATS[@]} 类):"
+echo "  ${DEFAULT_CATS[@]}"
 echo ""
 read -p "指定类别 (空格分隔, 回车=全部) [默认: 全部]: " cats_input
 if [ -z "$cats_input" ]; then
-    CATEGORIES=(bottle cable capsule carpet grid hazelnut leather
-                metal_nut pill screw tile toothbrush transistor wood zipper)
+    CATEGORIES=("${DEFAULT_CATS[@]}")
 else
     CATEGORIES=($cats_input)
 fi
 echo "  → 类别: ${CATEGORIES[@]} (共 ${#CATEGORIES[@]} 个)"
 echo ""
 
-# --- 5. 确认 ---
-DATASET="mvtec"
+# --- 6. 确认 ---
 num_categories=${#CATEGORIES[@]}
 num_seeds=${#SEEDS[@]}
 total_tasks=$((num_categories * num_seeds))
@@ -121,7 +141,7 @@ now=$(date)
 
 gpu_total_memory=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
 gpu_free_memory=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1)
-used_memory=3072  # MB per process
+used_memory=2560  # MB per process
 
 if [ -z "$gpu_free_memory" ]; then
     echo "错误: 无法获取 GPU 显存信息，请确认 nvidia-smi 可用"

@@ -16,7 +16,7 @@ now=$(date)
 gpu_total_memory=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits)
 gpu_used_memory=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)
 gpu_free_memory=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits)
-used_memory=3072 # mb per process
+used_memory=2560 # mb per process
 
 # ==================== 交互式配置 ====================
 echo "================================================"

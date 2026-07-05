@@ -152,25 +152,30 @@ def train_category(
                    f"Pixel AUROC: {current_score['pixel_auroc']:.4f}")
         
         # === 保存阶段 ===
-        # 检查是否为最佳
-        # macaroni2 使用组合分数 (0.5×Image + 0.5×Pixel)，其他类别以 Image AUROC 为主
-        is_best = False
-        if atype == 'macaroni2':
-            current_combined = 0.5 * current_score['image_auroc'] + 0.5 * current_score['pixel_auroc']
-            best_combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
-            if current_combined > best_combined:
-                is_best = True
+        # 预热期: 前 warmup_epochs 个 meta-epoch 跳过 best checkpoint 选择,
+        # 避免随机初始化参数主导早期评分 (少样本下尤其明显)
+        warmup_epochs = getattr(config, 'warmup_epochs', 5)
+        if epoch < warmup_epochs:
+            logger.info(f"  [Warmup] epoch {epoch+1}/{warmup_epochs}, 跳过 best 检查")
         else:
-            if current_score['image_auroc'] > best_score['image_auroc']:
-                is_best = True
-            elif (current_score['image_auroc'] == best_score['image_auroc'] and
-                  current_score['pixel_auroc'] > best_score['pixel_auroc']):
-                is_best = True
-        
-        if is_best:
-            best_score = current_score.copy()
-            best_epoch = epoch
-            model.save(best_ckpt_path, epoch=epoch, scores=best_score)
+            is_best = False
+            # macaroni2 使用组合分数 (0.5×Image + 0.5×Pixel)，其他类别以 Image AUROC 为主
+            if atype == 'macaroni2':
+                current_combined = 0.5 * current_score['image_auroc'] + 0.5 * current_score['pixel_auroc']
+                best_combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
+                if current_combined > best_combined:
+                    is_best = True
+            else:
+                if current_score['image_auroc'] > best_score['image_auroc']:
+                    is_best = True
+                elif (current_score['image_auroc'] == best_score['image_auroc'] and
+                      current_score['pixel_auroc'] > best_score['pixel_auroc']):
+                    is_best = True
+
+            if is_best:
+                best_score = current_score.copy()
+                best_epoch = epoch
+                model.save(best_ckpt_path, epoch=epoch, scores=best_score)
 
             logger.info('@' * 50)
             logger.info(f"NEW BEST! Epoch: {epoch+1}")
