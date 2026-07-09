@@ -177,14 +177,14 @@ def train_category(
                 best_epoch = epoch
                 model.save(best_ckpt_path, epoch=epoch, scores=best_score)
 
-            logger.info('@' * 50)
-            logger.info(f"NEW BEST! Epoch: {epoch+1}")
-            logger.info(f"  Image AUROC: {best_score['image_auroc']:.4f}")
-            logger.info(f"  Pixel AUROC: {best_score['pixel_auroc']:.4f}")
-            if atype == 'macaroni2':
-                combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
-                logger.info(f"  Combined (0.5I+0.5P): {combined:.4f}")
-            logger.info('@' * 50)
+                logger.info('@' * 50)
+                logger.info(f"NEW BEST! Epoch: {epoch+1}")
+                logger.info(f"  Image AUROC: {best_score['image_auroc']:.4f}")
+                logger.info(f"  Pixel AUROC: {best_score['pixel_auroc']:.4f}")
+                if atype == 'macaroni2':
+                    combined = 0.5 * best_score['image_auroc'] + 0.5 * best_score['pixel_auroc']
+                    logger.info(f"  Combined (0.5I+0.5P): {combined:.4f}")
+                logger.info('@' * 50)
 
     # === 最终完整评估（加载 best checkpoint 计算全部指标）===
     logger.info(f"\n{'='*60}")
