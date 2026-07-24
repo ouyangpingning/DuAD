@@ -56,13 +56,6 @@ class ModelConfig:
     perlin_branch_weight: float = 1.0  # Perlin分支BCE损失的权重
     pca_branch_weight: float = 1.0     # PCA分支Hinge损失的权重
 
-    # PCA Student 参数
-    use_pca_student: bool = False       # 是否使用 PCA Student 替代 SVD
-    pca_student_hidden_dims: List[int] = None  # MLP 隐藏层维度
-    pca_student_lr: float = 0.001       # Adam 学习率
-    pca_student_epochs: int = 50        # 训练轮数
-    pca_student_batch_size: int = 4096  # mini-batch 大小 (patch 级)
-
     # 消融实验标记
     ablation_tag: str = ""              # 消融变体标识，用于 checkpoint/log 命名
 
@@ -82,8 +75,6 @@ class ModelConfig:
     def __post_init__(self):
         if self.layer_indices is None:
             self.layer_indices = [2, 5, 8, 11]
-        if self.pca_student_hidden_dims is None:
-            self.pca_student_hidden_dims = [512, 128]
         if self.multistep_milestones is None:
             self.multistep_milestones = [0.8, 0.9]
 
@@ -101,6 +92,7 @@ class FeatureAggregator(torch.nn.Module):
     Available methods:
         "neighborhood"   — 3×3 邻域 Unfold + Align_dim + Stack + AdaptiveAvgPool1d (默认)
         "channel_concat" — 通道维直接拼接, 无邻域无跨层融合 (消融 B4)
+        "fusion"         — 门控融合: neighborhood + channel_concat 自适应加权
 
     Usage:
         agg = FeatureAggregator(input_dim=384, num_layers=4, method="neighborhood")
@@ -114,11 +106,12 @@ class FeatureAggregator(torch.nn.Module):
         stride:     Unfold 步长, 仅 "neighborhood" 使用 (默认 1)
     """
 
-    _METHODS = {"neighborhood", "channel_concat"}
+    _METHODS = {"neighborhood", "channel_concat", "fusion"}
 
     def __init__(self, input_dim=384, num_layers=4,
                  method="neighborhood",
-                 patch_size=3, stride=1):
+                 patch_size=3, stride=1,
+                 fusion_hidden_dim=None):
         super().__init__()
         if method not in self._METHODS:
             raise ValueError(
@@ -139,6 +132,16 @@ class FeatureAggregator(torch.nn.Module):
             padding=padding, dilation=1,
         )
 
+        # 门控融合 MLP: 学习每个 patch 在每个通道上信任哪个分支
+        if method == "fusion":
+            hidden = fusion_hidden_dim or max(self.output_dim // 4, 64)
+            self.gate_mlp = torch.nn.Sequential(
+                torch.nn.Linear(self.output_dim * 2, hidden),
+                torch.nn.ReLU(),
+                torch.nn.Linear(hidden, self.output_dim),
+                torch.nn.Sigmoid(),
+            )
+
     def forward(self, layer_features):
         """聚合多层特征 → patch 向量。
 
@@ -151,6 +154,8 @@ class FeatureAggregator(torch.nn.Module):
             return self._aggregate_neighborhood(layer_features)
         elif self.method == "channel_concat":
             return self._aggregate_channel_concat(layer_features)
+        elif self.method == "fusion":
+            return self._aggregate_fusion(layer_features)
         raise ValueError(f"Unknown method: {self.method}")
 
     def extra_repr(self):
@@ -190,6 +195,27 @@ class FeatureAggregator(torch.nn.Module):
         concat = torch.cat(layer_features, dim=1)                # [B, D, H, W]
         B, C, H, W = concat.shape
         return concat.permute(0, 2, 3, 1).reshape(B * H * W, C)  # [B*H*W, D]
+
+    def _aggregate_fusion(self, layer_features):
+        """门控融合: 将 neighborhood (全局/平滑) 和 channel_concat (局部/细节)
+        通过可学习的 per-patch 门控进行自适应融合。
+
+        gate = σ(MLP([F_neighbor; F_channel]))
+        F_out = gate ⊙ F_neighbor + (1 - gate) ⊙ F_channel
+
+        动机: neighborhood 类似低通滤波器，丢失细小异常但保留全局结构；
+              channel_concat 保留所有细节但缺乏空间上下文。
+              门控让模型在每个 patch 上自行决定信任哪个分支。
+        """
+        F_neighbor = self._aggregate_neighborhood(layer_features)    # [B*N, D]
+        F_channel = self._aggregate_channel_concat(layer_features)   # [B*N, D]
+
+        # 拼接两个视图作为门控输入
+        gate_input = torch.cat([F_neighbor, F_channel], dim=-1)      # [B*N, 2D]
+        gate = self.gate_mlp(gate_input)                             # [B*N, D]
+
+        # 加权融合
+        return gate * F_neighbor + (1 - gate) * F_channel            # [B*N, D]
 
     # ─────────────────────────────────────────────────────────
     #  共享工具 (供聚合策略内部调用)
@@ -238,6 +264,9 @@ class FeatureExtractor(torch.nn.Module):
         self.encoder = self._load_encoder(model_path).to(self.device)
         self.encoder.eval()
 
+        # 聚合器也移到目标设备 (gate_mlp 等有参数模块需要)
+        self.aggregator = self.aggregator.to(self.device)
+
         # 冻结参数
         for param in self.encoder.parameters():
             param.requires_grad = False
@@ -284,7 +313,6 @@ class PCAMaskGenerator:
         kernel_size: int = 3,
         use_gpu: bool = True,                 # 是否使用GPU加速
         skip_categories: List[str] = None,    # 指定跳过的类别列表（返回全1掩模）
-        pca_student = None,                    # PCAStudent 实例，替代 SVD
     ):
         self.threshold = threshold
         self.border_ratio = border_ratio
@@ -292,19 +320,23 @@ class PCAMaskGenerator:
         self.use_gpu = use_gpu and torch.cuda.is_available()
         self.skip_categories = skip_categories or []
         self.current_category = None  # 当前处理的类别
-        self.pca_student = pca_student  # PCA Student 模型（可选）
+        # SVD 缓存：fit 一次，后续只做投影
+        self._pca_mean = None       # [D] 均值向量
+        self._pca_component = None  # [D] 第一主成分方向
+        self._pca_category = None   # 缓存对应的类别名 (避免跨类别混用)
     def set_category(self, category: str):
         """
         设置当前处理的类别
-        
+
         Args:
             category: 类别名称，如 'screw', 'transistor' 等
         """
+        if category != self.current_category:
+            # 切换类别时清除 SVD 缓存 (新类别需要重新 fit)
+            self._pca_mean = None
+            self._pca_component = None
+            self._pca_category = None
         self.current_category = category
-
-    def set_pca_student(self, student):
-        """设置或清除 PCA Student 模型"""
-        self.pca_student = student
 
     def __call__(
         self, 
@@ -366,17 +398,9 @@ class PCAMaskGenerator:
         else:
             features_tensor = features.cpu()
 
-        # ---- PCA Student 路径：概率 → 0.5 阈值 → 形态学 ----
-        if self.pca_student is not None:
-            probs = self._compute_first_pc_torch(features_tensor)  # [0, 1]
-            mask = probs > 0.5
-            mask_2d = mask.reshape(H, W)
-            mask_processed = self._morphological_process(mask_2d)
-            return mask_processed.flatten()
-
         # ---- SVD 路径：PC 值 → 阈值 → 中心检测 → 掩模 ----
-        # 计算第一主成分（GPU/CPU自动选择）
-        first_pc = self._compute_first_pc_torch(features_tensor)
+        # 计算第一主成分 (首次 SVD + 缓存, 后续 O(N*D) 投影)
+        first_pc = self._compute_first_pc_svd(features_tensor)
 
         # 生成初始掩模
         mask = first_pc > self.threshold
@@ -404,34 +428,41 @@ class PCAMaskGenerator:
         mask_processed = self._morphological_process(mask_2d)
         return mask_processed.flatten()
 
-    def _compute_first_pc_torch(self, features: torch.Tensor) -> torch.Tensor:
+    def _compute_first_pc_svd(self, features: torch.Tensor) -> torch.Tensor:
+        """通过 SVD 计算第一主成分投影值。
+
+        首次调用时运行 SVD 并缓存方向向量；后续调用直接用缓存做投影 (O(N*D))，
+        避免重复 SVD (O(N*D*min(N,D)))。
         """
-        计算前景概率 (PCA Student) 或 PC 投影值 (SVD 回退)
+        # 检查缓存是否命中 (同类别、同设备)
+        if (self._pca_component is not None
+                and self._pca_mean is not None
+                and self._pca_category == self.current_category):
+            cached_mean = self._pca_mean.to(features.device)
+            cached_comp = self._pca_component.to(features.device)
+            features_centered = features - cached_mean.unsqueeze(0)
+            return features_centered @ cached_comp
 
-        PCA Student 路径: 输出 sigmoid 概率 [0, 1]
-        SVD 回退路径: 输出 PC 投影值 (无界标量)
-        """
-        if self.pca_student is not None:
-            self.pca_student.eval()
-            with torch.no_grad():
-                return torch.sigmoid(self.pca_student(features).squeeze(-1))
-
-        return self._compute_first_pc_svd(features)
-
-    @staticmethod
-    def _compute_first_pc_svd(features: torch.Tensor) -> torch.Tensor:
-        """通过 SVD 计算第一主成分投影值"""
+        # 首次调用：完整 SVD，缓存方向向量
         mean = features.mean(dim=0, keepdim=True)
         features_centered = features - mean
         try:
             U, S, Vh = torch.linalg.svd(features_centered, full_matrices=False)
-            first_component = Vh[0, :]
-            return features_centered @ first_component
+            self._pca_component = Vh[0, :].detach().cpu()   # [D] 缓存到 CPU
+            self._pca_mean = mean.squeeze(0).detach().cpu()  # [D] 缓存到 CPU
+            self._pca_category = self.current_category
+            return features_centered @ self._pca_component.to(features.device)
         except RuntimeError:
             features_np = features.cpu().numpy()
             pca = PCA(n_components=1, svd_solver='randomized')
-            first_pc_np = pca.fit_transform(features_np).squeeze()
-            return torch.from_numpy(first_pc_np).to(features.device)
+            pca.fit(features_np)
+            first_pc_np = pca.components_[0]  # [D] 方向向量
+            self._pca_component = torch.from_numpy(first_pc_np).float().cpu()
+            self._pca_mean = torch.from_numpy(pca.mean_).float().cpu()
+            self._pca_category = self.current_category
+            return torch.from_numpy(
+                pca.transform(features_np).squeeze()
+            ).to(features.device)
 
     def _morphological_process(self, mask_2d: torch.Tensor) -> torch.Tensor:
         """
@@ -602,34 +633,6 @@ class PerlinMaskGenerator:
     @staticmethod
     def _lerp_np(x, y, w):
         return (y - x) * w + x
-
-
-class PCAStudent(torch.nn.Module):
-    """
-    PCA Student — MLP 从 DINOv2 特征预测二值前景掩模
-
-    架构: Linear(input_dim, H1) -> ReLU -> Linear(H1, H2) -> ReLU -> Linear(H2, 1)
-    输出 raw logits，用 BCEWithLogitsLoss 训练，推理时经 sigmoid 转前景概率。
-    """
-
-    def __init__(self, input_dim: int = 1536, hidden_dims: list = None):
-        super().__init__()
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dims or [512, 128]
-
-        layers = []
-        prev_dim = input_dim
-        for h in self.hidden_dims:
-            layers.append(torch.nn.Linear(prev_dim, h))
-            layers.append(torch.nn.ReLU(inplace=True))
-            prev_dim = h
-        layers.append(torch.nn.Linear(prev_dim, 1))
-        self.net = torch.nn.Sequential(*layers)
-        self.apply(init_weight)
-
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        """返回 raw logits [N, 1]"""
-        return self.net(features)
 
 
 # 投影器————将特征维度进行修改
@@ -1097,139 +1100,6 @@ class Trainer:
             self.global_step += 1
             return loss.item(), p_true, p_fake
     
-    def train_pca_student(self, train_dataloader) -> None:
-        """
-        在 GAN 训练之前训练 PCA Student。
-        Phase 1: 用 SVD 生成的二值掩模作为 ground truth
-        Phase 2: 用 BCEWithLogitsLoss 训练 MLP
-        训练完成后自动挂接到 self.pca_generator。
-        """
-        self.logger.info("=" * 60)
-        self.logger.info("Training PCA Student (MLP, BCE)...")
-        self.logger.info(f"  hidden_dims={self.config.pca_student_hidden_dims}, "
-                         f"lr={self.config.pca_student_lr}, "
-                         f"epochs={self.config.pca_student_epochs}")
-        self.logger.info("=" * 60)
-
-        self.pca_student = PCAStudent(
-            input_dim=self.config.input_planes,
-            hidden_dims=self.config.pca_student_hidden_dims,
-        ).to(self.config.device)
-
-        optimizer = torch.optim.Adam(
-            self.pca_student.parameters(),
-            lr=self.config.pca_student_lr,
-            weight_decay=1e-5,
-        )
-        criterion = torch.nn.BCEWithLogitsLoss()
-
-        # --- Phase 1: 收集特征和 SVD 二值掩模 targets ---
-        self.logger.info("Phase 1/2: Extracting features and computing SVD mask targets...")
-        all_features = []
-        all_targets = []
-
-        temp_pca_gen = PCAMaskGenerator(
-            threshold=self.config.pca_threshold,
-            border_ratio=self.config.pca_border,
-            kernel_size=self.config.pca_kernel_size,
-            use_gpu=self.config.pca_use_gpu,
-            skip_categories=self.config.pca_skip_categories,
-            pca_student=None,
-        )
-        if self.pca_generator is not None:
-            temp_pca_gen.set_category(self.pca_generator.current_category)
-
-        self.extractor.eval()
-        with torch.no_grad():
-            for images, _, _, _ in tqdm(
-                train_dataloader,
-                desc="Collecting PCA targets",
-                leave=False,
-            ):
-                images = images.to(self.config.device)
-                features, (H, W) = self.extractor(images)
-                targets = temp_pca_gen(features, (H, W)).float()
-                all_features.append(features.cpu())
-                all_targets.append(targets.cpu())
-
-        all_features = torch.cat(all_features, dim=0)
-        all_targets = torch.cat(all_targets, dim=0)
-
-        n_patches = all_features.shape[0]
-        fg_ratio = all_targets.float().mean().item()
-        self.logger.info(f"Collected {n_patches} patches, "
-                         f"feature_dim={all_features.shape[1]}.")
-        self.logger.info(f"Foreground ratio: {fg_ratio:.3f} "
-                         f"({int(fg_ratio * n_patches)} patches)")
-
-        # --- Phase 2: 训练 Student ---
-        self.logger.info(f"Phase 2/2: Training for {self.config.pca_student_epochs} "
-                         f"epochs...")
-
-        dataset = torch.utils.data.TensorDataset(all_features, all_targets)
-        loader = DataLoader(
-            dataset,
-            batch_size=self.config.pca_student_batch_size,
-            shuffle=True,
-            drop_last=False,
-        )
-
-        best_loss = float("inf")
-        for epoch in range(self.config.pca_student_epochs):
-            self.pca_student.train()
-            total_loss = 0.0
-            num_batches = 0
-
-            for batch_feat, batch_target in loader:
-                batch_feat = batch_feat.to(self.config.device)
-                batch_target = batch_target.to(self.config.device)
-
-                pred = self.pca_student(batch_feat).squeeze(-1)
-                loss = criterion(pred, batch_target)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                total_loss += loss.item()
-                num_batches += 1
-
-            avg_loss = total_loss / max(num_batches, 1)
-
-            if (epoch + 1) % 10 == 0 or epoch == 0:
-                self.pca_student.eval()
-                with torch.no_grad():
-                    subset_n = min(4096, n_patches)
-                    sub_feat = all_features[:subset_n].to(self.config.device)
-                    sub_target = all_targets[:subset_n].to(self.config.device)
-                    sub_pred = self.pca_student(sub_feat).squeeze(-1)
-
-                    pred_mask = (torch.sigmoid(sub_pred) > 0.5).float()
-                    target_mask = sub_target
-                    intersection = (pred_mask * target_mask).sum()
-                    union = (pred_mask + target_mask).clamp(0, 1).sum()
-                    iou = (intersection / max(union, 1)).item()
-                    acc = (pred_mask == target_mask).float().mean().item()
-
-                    self.logger.info(
-                        f"  PCA Student Epoch {epoch+1:3d}/"
-                        f"{self.config.pca_student_epochs}: "
-                        f"BCE={avg_loss:.6f}, IoU={iou:.4f}, Acc={acc:.4f}"
-                    )
-
-            best_loss = min(best_loss, avg_loss)
-
-        self.pca_student.eval()
-        self.logger.info(f"PCA Student training complete. "
-                         f"Best BCE={best_loss:.6f}.")
-
-        # 挂接到自己的 PCA generator
-        if self.pca_generator is not None:
-            self.pca_generator.set_pca_student(self.pca_student)
-            self.logger.info("PCA Student attached to Trainer's PCA generator.")
-
-
-
 class Predictor:
     """预测器 - 只负责推理逻辑"""
     
@@ -1315,32 +1185,38 @@ class Predictor:
                 full_scores[mask_tensor] = patch_scores
                 patch_scores = full_scores
             
-            # 重塑为图像形式
-            patch_scores = patch_scores.cpu().numpy()
-            patch_scores = patch_scores.reshape(batch_size, H, W)
-            
-            # 上采样到目标尺寸
+            # 重塑为图像形式 (保留在 GPU)
+            patch_scores = patch_scores.reshape(batch_size, H, W)   # [B, H, W]
+
+            # 上采样到目标尺寸 (全程 GPU)
             masks = self._upsample_masks(patch_scores)
-            
-            # 计算图像级分数
+
+            # 计算图像级分数 (GPU)
             if aggregation == "max":
-                img_scores = self._aggregate_max(patch_scores)
+                img_scores = patch_scores.reshape(batch_size, -1).max(dim=1).values
             elif aggregation == "topk":
-                img_scores = self._aggregate_topk(patch_scores, k=10)
+                flat = patch_scores.reshape(batch_size, -1)
+                img_scores = flat.topk(k=10, dim=1).values.mean(dim=1)
             else:
                 raise ValueError(f"Unknown aggregation: {aggregation}")
-            
-            all_scores.extend(img_scores.tolist())
-            all_masks.extend(masks)
+
+            # 批量转 CPU (唯一一次)
+            all_scores.extend(img_scores.cpu().tolist())
+            all_masks.extend([m for m in masks.cpu().numpy()])
             all_labels.extend(labels.numpy().tolist())
             all_masks_gt.extend(masks_gt.numpy().tolist())
         
         return all_scores, all_masks, all_labels, all_masks_gt
     
-    def _upsample_masks(self, patch_scores: np.ndarray) -> List[np.ndarray]:
-        """上采样到目标尺寸 + GPU 批量高斯平滑"""
-        B, H, W = patch_scores.shape
-        scores_tensor = torch.from_numpy(patch_scores).unsqueeze(1).float()
+    def _upsample_masks(self, patch_scores: torch.Tensor) -> torch.Tensor:
+        """上采样到目标尺寸 + GPU 批量高斯平滑。
+
+        Args:
+            patch_scores: [B, H, W] GPU tensor
+        Returns:
+            [B, 1, target_size, target_size] GPU tensor
+        """
+        scores_tensor = patch_scores.unsqueeze(1).float()  # [B, 1, H, W]
 
         upsampled = F.interpolate(
             scores_tensor,
@@ -1349,22 +1225,8 @@ class Predictor:
             align_corners=False
         )  # [B, 1, target_size, target_size]
 
-        # GPU 批量高斯平滑，替代逐图 cv2.GaussianBlur CPU 往返
-        blurred = self.blur(upsampled)  # [B, 1, target_size, target_size]
-        masks = blurred.cpu().numpy()
-        return [m for m in masks]
+        return self.blur(upsampled)  # [B, 1, target_size, target_size]
     
-    def _aggregate_max(self, patch_scores: np.ndarray) -> np.ndarray:
-        """最大值聚合"""
-        return patch_scores.reshape(patch_scores.shape[0], -1).max(axis=1)
-    
-    def _aggregate_topk(self, patch_scores: np.ndarray, k: int = 10) -> np.ndarray:
-        """Top-K平均聚合"""
-        B = patch_scores.shape[0]
-        flat = patch_scores.reshape(B, -1)
-        topk = np.partition(flat, -k, axis=1)[:, -k:]
-        return topk.mean(axis=1)
-
 # 主要代码层
 class DINOv2AnomalyDetector:
     """
@@ -1415,7 +1277,6 @@ class DINOv2AnomalyDetector:
         self.trainer = None # 训练器实例化放在fit方法中，避免不必要的资源占用
         self.predictor = None # 预测器实例化放在predict方法中，避免不必要的资源占用
         self.current_category = None # 当前处理的类别，用于PCA掩模的类别特定控制
-        self.pca_student = None  # PCA Student 模型（可选，替代 SVD 推理）
 
         # 记录初始化信息
         self._log_init()
@@ -1451,34 +1312,6 @@ class DINOv2AnomalyDetector:
             self.predictor.pca_generator.set_category(category)
         self.logger.info(f"Set current category: {category}")
 
-    def train_pca_student(self, train_dataloader) -> None:
-        """训练 PCA Student（每次调用都重新训练），委托给 Trainer 执行"""
-        if not self.config.use_pca_student:
-            self.logger.info("PCA Student is disabled (use_pca_student=False). Skipping.")
-            return
-
-        if not self.config.use_pca_mask:
-            self.logger.warning("PCA Student requires PCA mask (use_pca_mask=True). Skipping.")
-            return
-
-        if self.config.pca_skip_categories and self.current_category in self.config.pca_skip_categories:
-            self.logger.info(
-                f"Category '{self.current_category}' is in skip_categories. "
-                f"Skipping PCA Student training (not needed, mask is always all-ones)."
-            )
-            return
-
-        if self.trainer is None:
-            self.trainer = Trainer(
-                self.feature_extractor, self.projection,
-                self.discriminator, self.config, self.logger
-            )
-            if self.current_category is not None and self.trainer.pca_generator:
-                self.trainer.pca_generator.set_category(self.current_category)
-
-        self.trainer.train_pca_student(train_dataloader)
-        self.pca_student = self.trainer.pca_student
-
     def fit(self, train_dataloader) -> Dict[str, float]:
         """训练一个 meta epoch"""
         if self.trainer is None:
@@ -1488,8 +1321,6 @@ class DINOv2AnomalyDetector:
             )
             if self.current_category is not None and self.trainer.pca_generator:
                 self.trainer.pca_generator.set_category(self.current_category)
-            if self.pca_student is not None and self.trainer.pca_generator is not None:
-                self.trainer.pca_generator.set_pca_student(self.pca_student)
         return self.trainer.train_epoch(train_dataloader)
     
     def predict(
@@ -1508,9 +1339,6 @@ class DINOv2AnomalyDetector:
             )
             if self.current_category is not None and self.predictor.pca_generator:
                 self.predictor.pca_generator.set_category(self.current_category)
-            # 挂接 PCA Student 到新创建的 predictor
-            if self.pca_student is not None and self.predictor.pca_generator is not None:
-                self.predictor.pca_generator.set_pca_student(self.pca_student)
 
         return self.predictor.predict(test_dataloader, aggregation)
     

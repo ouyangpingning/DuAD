@@ -114,9 +114,6 @@ def train_category(
     else:
         best_ckpt_path = os.path.join(cat_ckpt_dir, f"{atype}{config.ablation_tag}_best_ckpt.pth")
 
-    # 训练 PCA Student（每次按需训练，不持久化）
-    model.train_pca_student(train_loader)
-
     # 最佳分数追踪
     best_score = {
         'image_auroc': 0.0,
@@ -280,17 +277,11 @@ def train_category(
 )
 @click.option(
     '--aggregation',
-    type=click.Choice(['neighborhood', 'channel_concat']),
+    type=click.Choice(['neighborhood', 'channel_concat', 'fusion']),
     default=None,
     help='特征聚合方式 (消融实验): neighborhood (默认, 邻域聚合) 或 channel_concat (通道拼接)'
 )
-@click.option(
-    '--use_pca_student',
-    is_flag=True,
-    default=False,
-    help='消融: 使用 PCA Student MLP 生成掩模 (替代 SVD)'
-)
-def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment, aggregation, use_pca_student):
+def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment, aggregation):
     """主函数"""
     # 将 click 返回的字符串按空格分割为列表
     categories = categories.strip().split()
@@ -355,11 +346,7 @@ def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no
         config.aggregation_type = aggregation
         config.ablation_tag += f"_agg-{aggregation}" if config.ablation_tag else f"_agg-{aggregation}"
         print(f"[ABLATION] Aggregation type: {aggregation}")
-    if use_pca_student:
-        config.use_pca_student = True
-        config.ablation_tag += "_pcaStudent" if config.ablation_tag else "_pcaStudent"
-        print("[ABLATION] PCA Student ENABLED (MLP mask instead of SVD)")
-    if ablation_tags or aggregation is not None or use_pca_student:
+    if ablation_tags or aggregation is not None:
         print(f"[ABLATION] Checkpoint tag: {config.ablation_tag}")
     # ================================
 

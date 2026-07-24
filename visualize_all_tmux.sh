@@ -63,8 +63,24 @@ echo ""
 if [[ ! "$include_inference" =~ ^[Nn] ]]; then
     read -p "随机抽取样本数（默认=4）: " num_samples
     num_samples=${num_samples:-4}
+    read -p "Query 随机种子，固定抽图结果（默认=42）: " query_seed
+    query_seed=${query_seed:-42}
+    read -p "对比模式 — 第二个 K 值（回车=不启用对比，例如输入 1 表示对比 K=1 vs 当前 K）: " compare_k_shot
+    compare_k_shot=${compare_k_shot:-}
+    if [ -n "$compare_k_shot" ]; then
+        read -p "  对比模型的 shot_seed（默认与主模型相同=0）: " compare_shot_seed
+        compare_shot_seed=${compare_shot_seed:-0}
+        compare_args="--compare_k_shot ${compare_k_shot} --compare_shot_seed ${compare_shot_seed}"
+    else
+        compare_shot_seed=""
+        compare_args=""
+    fi
 else
     num_samples=""
+    query_seed=""
+    compare_k_shot=""
+    compare_shot_seed=""
+    compare_args=""
 fi
 
 echo ""
@@ -109,6 +125,10 @@ echo "================================================"
 echo "  推理可视化:   $([[ "$include_inference" =~ ^[Nn] ]] && echo '跳过' || echo '包含')"
 if [[ ! "$include_inference" =~ ^[Nn] ]]; then
     echo "  抽取样本数:   ${num_samples}"
+    echo "  Query 种子:   ${query_seed}"
+    if [ -n "$compare_k_shot" ]; then
+        echo "  对比 K-Shot:  K=${compare_k_shot}, seed=${compare_shot_seed}"
+    fi
 fi
 echo "  数据集:       ${dataset}"
 echo "  模型类型:     ${mode_label}"
@@ -143,7 +163,11 @@ for seed in "${seeds[@]}"; do
     if [[ "$include_inference" =~ ^[Nn] ]]; then
         cmd_args="${cmd_args} --skip_inference"
     else
-        cmd_args="${cmd_args} --num_samples ${num_samples}"
+        cmd_args="${cmd_args} --num_samples ${num_samples} --query_seed ${query_seed}"
+        if [ -n "$compare_k_shot" ]; then
+            cmd_args="${cmd_args} ${compare_args}"
+            session_name="${session_name}_cmpK${compare_k_shot}"
+        fi
     fi
 
     echo "创建 tmux 会话: ${session_name}"
@@ -170,6 +194,9 @@ echo ""
 echo "输出目录: ${work_path}/outputs/"
 if [[ ! "$include_inference" =~ ^[Nn] ]]; then
     echo "  - {category}_heatmap.png       异常热力图 (N×3 网格, 随机抽取)"
+    if [ -n "$compare_k_shot" ]; then
+        echo "  - {category}_heatmap_compare.png  对比热力图 (N×4 网格, K=${k_shot} vs K=${compare_k_shot})"
+    fi
 fi
 echo "  - pca_mask/{category}_pca_mask.png   PCA掩模 (SVD + MLP 对比)"
 echo "  - perlin_mask/{category}_perlin_mask.png  Perlin掩模"

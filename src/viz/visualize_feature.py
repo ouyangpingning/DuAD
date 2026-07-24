@@ -43,10 +43,15 @@ class CategoryVisualizer:
         k_shot: int = None,
         num_samples: int = 4,
         skip_inference: bool = False,
+        query_seed: int = 42,
+        compare_detector: DINOv2AnomalyDetector = None,
+        compare_label: str = "Compare",
     ):
         self.atype = atype
         self.vis_suffix = vis_suffix
         self.detector = detector
+        self.compare_detector = compare_detector
+        self.compare_label = compare_label
         self.config = config
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -60,6 +65,7 @@ class CategoryVisualizer:
         self.k_shot = k_shot
         self.num_samples = num_samples
         self.skip_inference = skip_inference
+        self.query_seed = query_seed
 
         # 缓存：避免重复从 DataLoader 取第一张训练图
         self._cached_train_sample = None
@@ -91,7 +97,7 @@ class CategoryVisualizer:
             self._cached_train_sample = images[0:1].to(self.device)
         return self._cached_train_sample
 
-    def _create_pca_generator(self, pca_student=None) -> PCAMaskGenerator:
+    def _create_pca_generator(self) -> PCAMaskGenerator:
         """工厂方法：用当前 config 创建 PCAMaskGenerator"""
         pca_gen = PCAMaskGenerator(
             threshold=self.config.pca_threshold,
@@ -99,7 +105,6 @@ class CategoryVisualizer:
             kernel_size=self.config.pca_kernel_size,
             use_gpu=self.config.pca_use_gpu,
             skip_categories=self.config.pca_skip_categories,
-            pca_student=pca_student,
         )
         pca_gen.set_category(self.atype)
         return pca_gen
@@ -132,7 +137,7 @@ class CategoryVisualizer:
         save_dir = f"{self.output_dir}/augmented/"
         os.makedirs(save_dir, exist_ok=True)
         save_path = f"{save_dir}/{self.atype}{self.vis_suffix}_augmented.png"
-        plt.savefig(save_path, dpi=150)
+        plt.savefig(save_path, dpi=600, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Augmented image visualization saved to: {save_path}")
 
@@ -141,10 +146,16 @@ class CategoryVisualizer:
     # =====================================================================
 
     def visualize_anomaly_heatmap(self):
-        """随机抽取 num_samples 张测试图，逐张推理并绘制 N×3 热力图网格"""
+        """随机抽取 num_samples 张测试图，逐张推理并绘制热力图网格。
+
+        当 self.compare_detector 不为 None 时，生成 N×4 对比网格:
+        [原图 | GT Mask | Heatmap A | Heatmap B]
+        否则生成 N×3 网格。
+        """
+        has_compare = self.compare_detector is not None
         self.logger.info(
             f"Collecting test samples for random visualization "
-            f"(n={self.num_samples})...")
+            f"(n={self.num_samples}, compare={'yes' if has_compare else 'no'})...")
 
         # --- 收集全部测试样本 ---
         all_samples = []
@@ -163,6 +174,7 @@ class CategoryVisualizer:
             f"{len(normal_samples)} normals ({len(all_samples)} total)")
 
         # --- 随机抽样：优先异常，不足时正常补齐 ---
+        random.seed(self.query_seed)
         if len(anomaly_samples) >= self.num_samples:
             selected = random.sample(anomaly_samples, self.num_samples)
         else:
@@ -180,14 +192,23 @@ class CategoryVisualizer:
             f"Selected {len(selected)} samples "
             f"({n_anomaly} anomalies, {n_normal} normals)")
 
-        # --- 准备推理环境 ---
+        # --- 准备推理环境 (detector A) ---
         self.detector.feature_extractor.eval()
         self.detector.projection.eval()
         self.detector.discriminator.eval()
-
-        pca_gen = (self._create_pca_generator(
-            pca_student=self.detector.pca_student)
+        pca_gen = (self._create_pca_generator()
             if self.config.use_pca_mask else None)
+
+        # --- 准备推理环境 (detector B, 对比模式) ---
+        if has_compare:
+            self.compare_detector.feature_extractor.eval()
+            self.compare_detector.projection.eval()
+            self.compare_detector.discriminator.eval()
+            # 对比检测器共享同一个 PCA 生成器以保证掩模一致
+            pca_gen_b = (self._create_pca_generator()
+                if self.config.use_pca_mask else None)
+        else:
+            pca_gen_b = None
 
         target_size = self.config.target_size
 
@@ -199,120 +220,165 @@ class CategoryVisualizer:
             if sample_gt_mask.ndim > 2:
                 sample_gt_mask = sample_gt_mask.squeeze()
 
-            with torch.no_grad():
-                features, (H, W) = self.detector.feature_extractor(sample_img)
-
-                mask_tensor = None
-                if pca_gen:
-                    mask_tensor = pca_gen(features, (H, W))
-                    features_masked = pca_gen.apply_mask(
-                        features, mask_tensor, self.device)
-                else:
-                    features_masked = features
-
-                projected = self.detector.projection(features_masked)
-                patch_scores = -self.detector.discriminator(projected)
-
-                # 构建完整 H×W 分数图（背景填 0，后续会被 NaN 掉）
-                fg_mask_np = None
-                if pca_gen and mask_tensor is not None:
-                    fg_mask_np = mask_tensor.cpu().numpy().reshape(H, W)
-                    full_scores = torch.zeros(H * W, 1, device=self.device)
-                    full_scores[mask_tensor] = patch_scores
-                    patch_scores = full_scores
-
-                patch_scores = patch_scores.cpu().numpy().reshape(H, W)
-                heatmap = cv2.resize(
-                    patch_scores.astype(np.float32), (target_size, target_size))
-                heatmap = cv2.GaussianBlur(heatmap, (0, 0), sigmaX=4)
-
-                # --- 背景 NaN ---
-                if fg_mask_np is not None:
-                    bg_mask = (~fg_mask_np).astype(np.float32)
-                    bg_mask_up = cv2.resize(
-                        bg_mask, (target_size, target_size),
-                        interpolation=cv2.INTER_NEAREST)
-                    bg_mask_up = cv2.GaussianBlur(
-                        bg_mask_up, (0, 0), sigmaX=4)
-                    fg_mask_up = ~(bg_mask_up > 0.5)
-                    heatmap[bg_mask_up > 0.5] = np.nan
-                else:
-                    fg_mask_up = np.ones(
-                        (target_size, target_size), dtype=bool)
-
-                # --- 百分位归一化（仅前景） ---
-                fg_values = heatmap[~np.isnan(heatmap)]
-                if len(fg_values) > 0:
-                    vmin = np.percentile(fg_values, 2)
-                    vmax = np.percentile(fg_values, 98)
-                    if vmax - vmin > 1e-8:
-                        heatmap = np.clip(heatmap, vmin, vmax)
-                        heatmap = (heatmap - vmin) / (vmax - vmin)
-
-                # --- F1 阈值过滤（仅异常样本） ---
-                if s['label'] == 1:
-                    self._apply_f1_threshold(
-                        heatmap, sample_gt_mask, fg_mask_up, target_size)
-
-            # 反归一化原图
+            # 反归一化原图 (两个检测器共享)
             img_np = self._denormalize(sample_img[0])
+
+            # 推理: detector A
+            heatmap_a = self._infer_heatmap(
+                self.detector, sample_img, pca_gen,
+                target_size, s['label'], sample_gt_mask)
+
+            # 推理: detector B (对比模式)
+            heatmap_b = None
+            if has_compare:
+                heatmap_b = self._infer_heatmap(
+                    self.compare_detector, sample_img, pca_gen_b,
+                    target_size, s['label'], sample_gt_mask)
 
             results.append({
                 'img_np': img_np,
                 'gt_mask': sample_gt_mask,
-                'heatmap': heatmap,
+                'heatmap_a': heatmap_a,
+                'heatmap_b': heatmap_b,
                 'label': s['label'],
             })
 
-        # --- N×3 网格渲染 ---
+        # --- N×K 网格渲染 (K=3 单模型, K=4 对比模式) ---
         from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+        n_cols = 4 if has_compare else 3
         n = len(results)
-        fig, axes = plt.subplots(n, 3, figsize=(18, 6 * n))
+        fig, axes = plt.subplots(n, n_cols, figsize=(6 * n_cols, 6 * n))
         if n == 1:
             axes = axes.reshape(1, -1)
 
         for i, r in enumerate(results):
             label_str = 'Anomaly' if r['label'] == 1 else 'Normal'
 
+            # Col 0: 原图
             axes[i, 0].imshow(r['img_np'])
-            axes[i, 0].set_title(f'[{label_str}] Original Image', fontsize=11)
+            axes[i, 0].set_title(f'[{label_str}] Original', fontsize=11)
             axes[i, 0].axis('off')
 
-            # 原图 + GT 标签掩码 (红色, 50% 透明度)
+            # Col 1: GT 掩码叠加
             gt_mask_up = cv2.resize(
                 r['gt_mask'].astype(np.float32),
                 (target_size, target_size),
                 interpolation=cv2.INTER_NEAREST)
             gt_mask_binary = gt_mask_up > 0.5
             axes[i, 1].imshow(r['img_np'])
-            # 构建 RGBA 叠加层：缺陷区域红色 50% 透明，正常区域完全透明
             overlay = np.zeros((target_size, target_size, 4), dtype=np.float32)
-            overlay[gt_mask_binary] = [1, 0, 0, 0.5]  # RGBA: red, 50% alpha
+            overlay[gt_mask_binary] = [1, 0, 0, 0.5]
             axes[i, 1].imshow(overlay)
-            axes[i, 1].set_title(f'[{label_str}] GT Mask Overlay', fontsize=11)
+            axes[i, 1].set_title(f'[{label_str}] GT Mask', fontsize=11)
             axes[i, 1].axis('off')
 
+            # Col 2: Heatmap A (主检测器) — 不单独加 colorbar
             axes[i, 2].imshow(r['img_np'], alpha=1.0)
-            im = axes[i, 2].imshow(r['heatmap'], cmap='plasma', alpha=0.8)
-            axes[i, 2].set_title(f'[{label_str}] Heatmap (plasma)', fontsize=11)
+            axes[i, 2].imshow(r['heatmap_a'], cmap='plasma', alpha=0.8)
+            axes[i, 2].set_title(f'[{label_str}] Heatmap A', fontsize=11)
             axes[i, 2].axis('off')
-            # 用 make_axes_locatable 添加 colorbar，不挤占图像空间
-            divider = make_axes_locatable(axes[i, 2])
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            plt.colorbar(im, cax=cax)
 
-        plt.suptitle(
-            f'{self.atype}{self.vis_suffix} — Anomaly Detection '
-            f'({n_anomaly} anomalies + {n_normal} normals, random sample)',
-            fontsize=15, fontweight='bold')
-        # rect=[0,0,1,0.96] 给 suptitle 留 4% 空间，避免与子图标题重叠
+            # Col 3: Heatmap B (对比检测器) — 最右列，加 colorbar
+            if has_compare and r['heatmap_b'] is not None:
+                axes[i, 3].imshow(r['img_np'], alpha=1.0)
+                im_last = axes[i, 3].imshow(r['heatmap_b'], cmap='plasma', alpha=0.8)
+                axes[i, 3].set_title(
+                    f'[{label_str}] Heatmap B ({self.compare_label})',
+                    fontsize=11)
+                axes[i, 3].axis('off')
+                divider = make_axes_locatable(axes[i, 3])
+                cax = divider.append_axes("right", size="5%", pad=0.05)
+                plt.colorbar(im_last, cax=cax)
+            elif not has_compare:
+                # 单模型模式: Col 2 就是最右列，在此加 colorbar
+                divider = make_axes_locatable(axes[i, 2])
+                cax = divider.append_axes("right", size="5%", pad=0.05)
+                # 重新获取 im 引用 (上一个 imshow 返回的对象)
+                im_last = axes[i, 2].images[-1]
+                plt.colorbar(im_last, cax=cax)
+
+        title = (f'{self.atype}{self.vis_suffix} — Anomaly Detection '
+                 f'({n_anomaly} anomalies + {n_normal} normals)')
+        if has_compare:
+            title += f' | Compare: {self.compare_label}'
+        plt.suptitle(title, fontsize=15, fontweight='bold')
         fig.tight_layout(rect=[0, 0, 1, 0.96])
 
-        save_path = f"{self.output_dir}/{self.atype}{self.vis_suffix}_heatmap.png"
-        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        suffix = "_compare" if has_compare else ""
+        save_path = f"{self.output_dir}/{self.atype}{self.vis_suffix}_heatmap{suffix}.png"
+        plt.savefig(save_path, dpi=600, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Anomaly heatmap saved to: {save_path}")
+
+    def _infer_heatmap(self, detector, sample_img, pca_gen,
+                       target_size, label, gt_mask):
+        """对单张图运行检测器推理，返回归一化后的 heatmap [H, W]。
+
+        Args:
+            detector: DINOv2AnomalyDetector 实例
+            sample_img: [1, C, H, W] tensor (已在目标设备上)
+            pca_gen: PCAMaskGenerator 或 None
+            target_size: 输出 heatmap 尺寸
+            label: 0 (正常) 或 1 (异常)
+            gt_mask: ground truth mask [H, W] numpy, 仅 label==1 时用于 F1 阈值
+        Returns:
+            heatmap: [target_size, target_size] numpy float32, NaN=背景/低于F1阈值
+        """
+        with torch.no_grad():
+            features, (H, W) = detector.feature_extractor(sample_img)
+
+            mask_tensor = None
+            if pca_gen:
+                mask_tensor = pca_gen(features, (H, W))
+                features_masked = pca_gen.apply_mask(
+                    features, mask_tensor, self.device)
+            else:
+                features_masked = features
+
+            projected = detector.projection(features_masked)
+            patch_scores = -detector.discriminator(projected)
+
+            # 构建完整 H×W 分数图（背景填 0，后续会被 NaN 掉）
+            fg_mask_np = None
+            if pca_gen and mask_tensor is not None:
+                fg_mask_np = mask_tensor.cpu().numpy().reshape(H, W)
+                full_scores = torch.zeros(H * W, 1, device=self.device)
+                full_scores[mask_tensor] = patch_scores
+                patch_scores = full_scores
+
+            patch_scores = patch_scores.cpu().numpy().reshape(H, W)
+            heatmap = cv2.resize(
+                patch_scores.astype(np.float32), (target_size, target_size))
+            heatmap = cv2.GaussianBlur(heatmap, (0, 0), sigmaX=4)
+
+            # 背景 NaN
+            if fg_mask_np is not None:
+                bg_mask = (~fg_mask_np).astype(np.float32)
+                bg_mask_up = cv2.resize(
+                    bg_mask, (target_size, target_size),
+                    interpolation=cv2.INTER_NEAREST)
+                bg_mask_up = cv2.GaussianBlur(bg_mask_up, (0, 0), sigmaX=4)
+                fg_mask_up = ~(bg_mask_up > 0.5)
+                heatmap[bg_mask_up > 0.5] = np.nan
+            else:
+                fg_mask_up = np.ones((target_size, target_size), dtype=bool)
+
+            # 百分位归一化（仅前景）
+            fg_values = heatmap[~np.isnan(heatmap)]
+            if len(fg_values) > 0:
+                vmin = np.percentile(fg_values, 2)
+                vmax = np.percentile(fg_values, 98)
+                if vmax - vmin > 1e-8:
+                    heatmap = np.clip(heatmap, vmin, vmax)
+                    heatmap = (heatmap - vmin) / (vmax - vmin)
+
+            # F1 阈值过滤（仅异常样本）
+            if label == 1:
+                self._apply_f1_threshold(
+                    heatmap, gt_mask, fg_mask_up, target_size)
+
+        return heatmap
 
     @staticmethod
     def _apply_f1_threshold(
@@ -348,11 +414,11 @@ class CategoryVisualizer:
         heatmap[heatmap <= best_thresh] = np.nan
 
     # =====================================================================
-    # 3. PCA 掩模可视化（SVD vs PCA Student 对比）
+    # 3. PCA 掩模可视化
     # =====================================================================
 
     def visualize_pca_mask(self) -> dict:
-        """生成 PCA 掩模对比图；返回 dict 供 visualize_perlin_mask 复用。
+        """生成 PCA 掩模图；返回 dict 供 visualize_perlin_mask 复用。
 
         Returns:
             {'svd_mask': Tensor, 'svd_mask_up': np.ndarray,
@@ -368,20 +434,18 @@ class CategoryVisualizer:
         with torch.no_grad():
             features, (H, W) = self.detector.feature_extractor(sample_image)
 
-            # ---- SVD 版本 (无 Student) ----
-            pca_gen_svd = self._create_pca_generator(pca_student=None)
+            # SVD 掩模
+            pca_gen_svd = self._create_pca_generator()
+            svd_mask = pca_gen_svd(features, (H, W))
+            svd_mask_2d = svd_mask.cpu().numpy().reshape(H, W)
 
-            # SVD 第一主成分投影值
+            # SVD 第一主成分投影值 (sklearn PCA for visualization)
             features_np = features.cpu().numpy()
             pca_sk = PCA(n_components=1, svd_solver='randomized')
             first_pc = pca_sk.fit_transform(features_np).squeeze()
             first_pc_2d = first_pc.reshape(H, W)
 
-            # SVD 掩模
-            svd_mask = pca_gen_svd(features, (H, W))
-            svd_mask_2d = svd_mask.cpu().numpy().reshape(H, W)
-
-            # 准备图像（min-max 归一化，保持与原实现一致）
+            # 准备图像（min-max 归一化）
             img_np = sample_image[0].cpu().permute(1, 2, 0).numpy()
             img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min() + 1e-8)
 
@@ -390,68 +454,14 @@ class CategoryVisualizer:
             svd_mask_up = cv2.resize(
                 svd_mask_2d.astype(np.float32), (target_size, target_size))
 
-            # ---- MLP 版本 (有 PCA Student) ----
-            has_student = (self.detector.pca_student is not None)
-            if has_student:
-                self.detector.pca_student.eval()
-                pca_gen_mlp = self._create_pca_generator(
-                    pca_student=self.detector.pca_student)
-
-                mlp_mask = pca_gen_mlp(features, (H, W))
-                mlp_mask_2d = mlp_mask.cpu().numpy().reshape(H, W)
-                mlp_mask_up = cv2.resize(
-                    mlp_mask_2d.astype(np.float32), (target_size, target_size))
-
-                # IoU
-                intersection = (svd_mask_2d & mlp_mask_2d).sum()
-                union = (svd_mask_2d | mlp_mask_2d).sum()
-                iou = intersection / max(union, 1)
-                self.logger.info(
-                    f"  PCA Student vs SVD mask IoU: {iou:.4f}")
-
-        # ---- 可视化 ----
-        if has_student:
-            fig, axes = plt.subplots(1, 4, figsize=(18, 5))
-
-            axes[0].imshow(img_np)
-            axes[0].set_title('原图', fontsize=12)
-            axes[0].axis('off')
-
-            im_svd = axes[1].imshow(first_pc_up, cmap='viridis')
-            axes[1].set_title('SVD 第一主成分投影值', fontsize=12)
-            axes[1].axis('off')
-            plt.colorbar(im_svd, ax=axes[1], fraction=0.046)
-
-            axes[2].imshow(img_np)
-            axes[2].imshow(svd_mask_up, cmap='Reds', alpha=0.4)
-            axes[2].set_title(
-                f'SVD 掩模 (fg={svd_mask_2d.mean():.1%})', fontsize=12)
-            axes[2].axis('off')
-
-            axes[3].imshow(img_np)
-            axes[3].imshow(mlp_mask_up, cmap='Reds', alpha=0.4)
-            axes[3].set_title(
-                f'MLP 掩模 (fg={mlp_mask_2d.mean():.1%}, IoU={iou:.3f})',
-                fontsize=12)
-            axes[3].axis('off')
-
-            plt.suptitle(
-                f'{self.atype}{self.vis_suffix} — '
-                f'PCA Mask: SVD vs PCA Student', fontsize=14)
-            plt.tight_layout()
-            plt.savefig(
-                f"{self.output_dir}/pca_mask/"
-                f"{self.atype}{self.vis_suffix}_pca_mask.png",
-                dpi=200, bbox_inches='tight')
-            plt.close()
-        else:
-            self._visualize_pca_mask_fallback(
-                image=img_np,
-                mask=svd_mask_up,
-                first_pc=first_pc_up,
-                save_path=f"{self.output_dir}/pca_mask/"
-                         f"{self.atype}{self.vis_suffix}_pca_mask.png",
-            )
+        # 3 列可视化: 原图 | 第一主成分 | PCA掩模
+        self._visualize_pca_mask_fallback(
+            image=img_np,
+            mask=svd_mask_up,
+            first_pc=first_pc_up,
+            save_path=f"{self.output_dir}/pca_mask/"
+                     f"{self.atype}{self.vis_suffix}_pca_mask.png",
+        )
 
         self.logger.info(
             f"PCA mask visualization saved to: "
@@ -538,7 +548,7 @@ class CategoryVisualizer:
             plt.savefig(
                 f"{self.output_dir}/perlin_mask/"
                 f"{self.atype}{self.vis_suffix}_perlin_mask.png",
-                dpi=300)
+                dpi=600, bbox_inches='tight')
             plt.close()
 
         self.logger.info(
@@ -579,7 +589,7 @@ class CategoryVisualizer:
         plt.savefig(
             f"{self.output_dir}/feature_map/"
             f"{self.atype}{self.vis_suffix}_feature_map.png",
-            dpi=150)
+            dpi=600, bbox_inches='tight')
         plt.close()
         self.logger.info(
             f"Feature map visualization saved to: "
@@ -592,7 +602,7 @@ class CategoryVisualizer:
 
     @staticmethod
     def _visualize_pca_mask_fallback(image, mask, first_pc, save_path=None):
-        """无 PCA Student 时的 3 列 PCA 掩模回退可视化"""
+        """3 列 PCA 掩模可视化: 原图 | 第一主成分 | PCA掩模"""
         from mpl_toolkits.axes_grid1 import make_axes_locatable
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 6))
@@ -617,7 +627,7 @@ class CategoryVisualizer:
         plt.tight_layout()
         if save_path:
             os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
-            plt.savefig(save_path, dpi=300)
+            plt.savefig(save_path, dpi=600)
             plt.close()
         else:
             plt.show()
@@ -703,7 +713,32 @@ class CategoryVisualizer:
     show_default=True,
     help='随机抽取的测试样本数量（优先抽取异常样本）'
 )
-def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples):
+@click.option(
+    '--query_seed',
+    type=int,
+    default=42,
+    show_default=True,
+    help='随机抽取测试图片的种子，固定后可复现每次 heatmap 的 query 图片'
+)
+@click.option(
+    '--compare_seed',
+    type=int,
+    default=None,
+    help='对比模式的第二个 shot_seed。指定后生成 N×4 对比热力图 (主模型 vs 对比模型)'
+)
+@click.option(
+    '--compare_k_shot',
+    type=int,
+    default=None,
+    help='对比模式的 K-Shot 值（与主模型不同的 K）。需配合 --compare_shot_seed 使用'
+)
+@click.option(
+    '--compare_shot_seed',
+    type=int,
+    default=None,
+    help='对比模式的 shot_seed（默认与主模型 --shot_seed 相同）'
+)
+def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples, query_seed, compare_seed, compare_k_shot, compare_shot_seed):
     categories = categories.strip().split()
     print(f"处理类别: {categories}")
     print(f"数据集: {dataset}")
@@ -711,7 +746,13 @@ def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples):
         print(f"少样本模式: K={k_shot}, seed={shot_seed}")
     if skip_inference:
         print("跳过模型推理（--skip_inference），仅生成分析可视化")
-    random.seed(42)
+    print(f"Query seed: {query_seed}")
+    # 对比模式触发条件: compare_k_shot 或 compare_seed 任一指定
+    compare_enabled = (compare_k_shot is not None) or (compare_seed is not None)
+    if compare_enabled:
+        cmp_k = compare_k_shot if compare_k_shot is not None else k_shot
+        cmp_s = compare_shot_seed if compare_shot_seed is not None else (compare_seed if compare_seed is not None else shot_seed)
+        print(f"对比模式: K={cmp_k}, seed={cmp_s}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -818,11 +859,31 @@ def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples):
                 logger.warning(f"Checkpoint not found: {ckpt_path}")
                 continue
 
-        # PCA Student 训练
-        if config.use_pca_student:
-            logger.info("Training PCA Student on-the-fly...")
-            detector.train_pca_student(train_loader)
-            logger.info("PCA Student training complete.")
+        # ---- 对比检测器 (可选) ----
+        compare_detector = None
+        compare_label = ""
+        if compare_enabled and not skip_inference:
+            cmp_k = compare_k_shot if compare_k_shot is not None else k_shot
+            cmp_s = compare_shot_seed if compare_shot_seed is not None else (compare_seed if compare_seed is not None else shot_seed)
+            compare_ckpt_path = os.path.join(
+                ckpt_dir, current_atype,
+                f"{current_atype}_k{cmp_k}_s{cmp_s}_best_ckpt.pth")
+            if not os.path.exists(compare_ckpt_path):
+                logger.warning(
+                    f"Compare checkpoint not found: {compare_ckpt_path}, "
+                    f"skipping comparison")
+            else:
+                compare_detector = DINOv2AnomalyDetector(
+                    model_path=dinov2_model_dir,
+                    config=config,
+                    logger=logger
+                )
+                compare_detector.set_category(current_atype)
+                epoch_b, scores_b, _, _ = compare_detector.load(compare_ckpt_path)
+                logger.info(
+                    f"Loaded compare checkpoint (K={cmp_k}, seed={cmp_s}) "
+                    f"from epoch {epoch_b}, scores: {scores_b}")
+                compare_label = f"K{cmp_k}_s{cmp_s}"
 
         # ---- 委托给 CategoryVisualizer ----
         viz = CategoryVisualizer(
@@ -842,6 +903,9 @@ def main(categories, k_shot, shot_seed, dataset, skip_inference, num_samples):
             k_shot=k_shot,
             num_samples=num_samples,
             skip_inference=skip_inference,
+            query_seed=query_seed,
+            compare_detector=compare_detector,
+            compare_label=compare_label,
         )
         viz.run_all()
 

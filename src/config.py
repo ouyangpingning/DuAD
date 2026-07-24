@@ -21,7 +21,6 @@ def build_model_config(cfg: dict, device: str = "cuda") -> ModelConfig:
     pca = cfg["pca_mask"]
     perlin = cfg["perlin_mask"]
     augment = cfg["augment"]
-    pca_student = cfg.get("pca_student", {})
     misc = cfg["misc"]
 
     return ModelConfig(
@@ -61,12 +60,6 @@ def build_model_config(cfg: dict, device: str = "cuda") -> ModelConfig:
         multistep_milestones=list(train.get("multistep_milestones", [0.8, 0.9])),
         multistep_gamma=train.get("multistep_gamma", 0.4),
         device=device,
-        # PCA Student 配置
-        use_pca_student=pca_student.get("use_pca_student", False),
-        pca_student_hidden_dims=list(pca_student.get("hidden_dims", [512, 128])),
-        pca_student_lr=pca_student.get("lr", 0.001),
-        pca_student_epochs=pca_student.get("epochs", 50),
-        pca_student_batch_size=pca_student.get("batch_size", 4096),
     )
 
 

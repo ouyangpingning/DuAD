@@ -6,7 +6,7 @@ target_size = 518 # 设置的输入图像尺寸，模型会自动调整输入图
 layer_indices = [2, 5, 8, 11] # 选择的 DINOv2 层索引，通常对应于不同层次的特征表示
 input_planes = 1536    # 384 * len(layer_indices) ， 这个是输入到投影器的特征维度，通常是dinov2输出的每层特征维度的总和
 hidden_dim = 1536 # 判别器的输入维度，通常设置为输入维度的相同大小以保持信息流畅
-aggregation_type = "neighborhood" # 特征聚合方式: "neighborhood" (邻域聚合, 默认) 或 "channel_concat" (通道拼接, 消融B4)
+aggregation_type = "fusion" # 特征聚合方式: "neighborhood" (邻域聚合, 默认) / "channel_concat" (通道拼接, 消融B4) / "fusion" (门控融合, 自适应加权两分支)
 
 [training]
 meta_epochs = 150 # 元训练的总轮数，通常需要较多轮数以充分训练模型
@@ -33,7 +33,7 @@ pca_threshold = 10.0 # PCA 分支的阈值，较高的值会使掩码更严格�
 pca_border = 0.2 # PCA 分支掩码的边界扩展比例，较大的值会增加掩码的覆盖范围，但过大可能会引入噪声
 pca_kernel_size = 3 # PCA 分支掩码的平滑卷积核大小，较大的值会增加掩码的平滑程度，但过大可能会模糊特征边界
 pca_use_gpu = true # 是否在 PCA 分支中使用 GPU 加速，通常有助于加速计算，但需要确保环境支持 GPU
-skip_categories = ["cable", "carpet", "grid", "leather", "tile", "transistor", "wood", "macaroni2", "pipe_fryum" ] # 在 PCA 分支中跳过的类别列表，通常是那些纹理复杂或特征不明显的类别，以避免引入噪声
+skip_categories = ["cable", "carpet", "grid", "leather", "tile", "transistor", "wood", "macaroni2"] # 在 PCA 分支中跳过的类别列表，通常是那些纹理复杂或特征不明显的类别，以避免引入噪声
 
 [perlin_mask]
 use_perlin_mask = true # 是否使用 Perlin 噪声分支的掩码，通常有助于增加模型的多样性和鲁棒性，但可能会增加计算复杂度
@@ -42,16 +42,9 @@ perlin_max = 4 # perlin噪声的最大值决定噪声生成范围
 perlin_branch_weight = 0.5 # Perlin 分支的权重，较高的值会增加 Perlin 分支在最终决策中的影响力，但过高可能会引入过多的噪声
 pca_branch_weight = 0.5 # PCA 分支的权重，较高的值会增加 PCA 分支在最终决策中的影响力，但过高可能会导致过拟合
 
-[pca_student]
-use_pca_student = false          # 是否使用 PCA Student 替代 SVD 推理（加速推理）
-hidden_dims = [512, 128]          # MLP 隐藏层维度
-lr = 0.001                        # Adam 学习率
-epochs = 100                       # PCA Student 训练轮数
-batch_size = 1369                 # 训练时的 mini-batch 大小（patch 级别）
-
 [augment]
 # 四种独立数据增强，可按类别分别指定（少样本模式下生效）
-flip_categories = ["grid", "hazelnut", "screw", "macaroni1", "macaroni2","capsules", "pcb1" ]     # 随机水平/垂直翻转
+flip_categories = ["grid", "hazelnut", "screw", "macaroni1", "macaroni2","capsules", "pcb1","pcb3" ]     # 随机水平/垂直翻转
 rotate_categories = ["grid", "hazelnut", "screw", "macaroni1","macaroni2","capsules","pcb1"]   # 随机旋转 ±180°
 translate_categories = ["macaroni1","macaroni2"]                             # 随机平移 ±10%
 color_jitter_categories = ["toothbrush"]              # 颜色抖动
@@ -78,7 +71,7 @@ pcb1 = 50
 pcb2 = 50
 pcb3 = 50
 pcb4 = 50
-# pipe_fryum = 50
+pipe_fryum = 50
 
 
 [category_pca.border] # 为每个类别设置不同的 PCA 边界扩展比例，较大的值会增加掩码的覆盖范围，但过大可能会引入噪声
@@ -102,7 +95,7 @@ pcb1 = 0.2
 pcb2 = 0.2
 pcb3 = 0.2
 pcb4 = 0.2
-# pipe_fryum = 0.2
+pipe_fryum = 0.2
 
 
 [paths]

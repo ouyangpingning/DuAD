@@ -2,35 +2,21 @@
 """
 ONNX 模型导出脚本
 
-将完整推理流程导出为 ONNX 格式:
-    DINOv2 → _embed_legacy 特征聚合 → Projection → Discriminator → 后处理
-
-支持两种 PCA 模式:
-  --pca_mode svd:     导出标准模型 (mask 外部输入, 配合 Python 端 SVD)
-  --pca_mode student: 先训练 PCA Student → 保存 .pth → 导出端到端 ONNX (image→heatmaps)
+将完整推理流程导出为 ONNX 格式 (SVD mask 外部输入):
+    DINOv2 → 特征聚合 → Projection → Discriminator → 后处理
 
 用法:
-    # SVD 模式 (默认)
     python src/deploy/export_onnx.py --category bottle
-
-    # PCA Student 模式 (自动训练 + 导出)
-    python src/deploy/export_onnx.py --category bottle --pca_mode student --verify
-
-    # 少样本 + Student
-    python src/deploy/export_onnx.py --category bottle --k_shot 4 --shot_seed 0 --pca_mode student --verify
+    python src/deploy/export_onnx.py --category bottle --k_shot 4 --shot_seed 0 --verify
 
 输出:
-    SVD 模式:   ./model_onnx/{category}_full.onnx
-    Student 模式:
-                ./model_onnx/{category}_pca_student.pth       (PCA Student 权重)
-                ./model_onnx/{category}_full_student.onnx     (端到端 ONNX, 内嵌 PCA Student)
+    ./model_onnx/{category}_full.onnx
 """
 
 import argparse
 import logging
 import sys
 from pathlib import Path
-
 # 让 src/deploy/ 下的模块能导入 src/ 同级模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -105,14 +91,18 @@ class _BaseONNXModel(torch.nn.Module):
                         .reshape(B, C, ps, ps, -1)
                         .permute(0, 4, 1, 2, 3)
                         .reshape(-1, C * ps * ps))
-            aligned = F.adaptive_avg_pool1d(
-                unfolded.unsqueeze(1), target_dim
+            aligned = F.interpolate(
+                unfolded.unsqueeze(1), size=target_dim,
+                mode='linear', align_corners=False
             ).squeeze(1)
             align_features.append(aligned)
 
         stacked = torch.stack(align_features, dim=1)
         stacked = stacked.reshape(stacked.shape[0], 1, -1)
-        pooled = F.adaptive_avg_pool1d(stacked, output_size)
+        pooled = F.interpolate(
+            stacked, size=output_size,
+            mode='linear', align_corners=False
+        )
         return pooled.reshape(pooled.shape[0], -1)
 
     def _post_process(self, scores_flat, B):
@@ -171,50 +161,6 @@ class FullAnomalyDetectorONNX(_BaseONNXModel):
         return self._post_process(scores, B)
 
 
-# ─── ONNX 模型: Student 模式 (PCA Student 内嵌) ──────────────────
-
-class FullAnomalyDetectorWithStudentONNX(_BaseONNXModel):
-    """
-    PCA Student 模式 ONNX 模型, 内嵌 PCA Student, 输入端到端。
-
-    输入:
-        image: [B, 3, target_size, target_size]
-
-    输出:
-        heatmaps:     [B, target_size, target_size]
-        image_scores: [B]
-    """
-
-    def __init__(self, dino_encoder, projection, discriminator, pca_student,
-                 layer_indices, embed_patch_size, target_size):
-        super().__init__(dino_encoder, layer_indices, embed_patch_size,
-                         target_size, 384 * len(layer_indices))
-        self.projection = projection
-        self.discriminator = discriminator
-        self.pca_student = pca_student
-
-    def forward(self, image):
-        B = image.shape[0]
-
-        layer_features = self._extract_intermediate_layers(image)
-        features = self._embed_legacy(layer_features)
-
-        # PCA Student → 前景掩模
-        probs = torch.sigmoid(self.pca_student(features).squeeze(-1))
-        mask = probs > 0.5
-
-        # Projection → Discriminator
-        projected = self.projection(features)
-        scores = -self.discriminator(projected).squeeze(-1)
-
-        # 背景填充
-        large = torch.full_like(scores, 1e10)
-        min_fg = torch.where(mask, scores, large).min()
-        scores = torch.where(mask, scores, min_fg.expand_as(scores))
-
-        return self._post_process(scores, B)
-
-
 # ─── 导出 ──────────────────────────────────────────────────────────
 
 def _build_detector_and_onnx_model(ckpt_path, config, target_size):
@@ -224,12 +170,12 @@ def _build_detector_and_onnx_model(ckpt_path, config, target_size):
     Returns: (detector, onnx_model)
     """
     model_path = str(Path("facebookresearch_dinov2_main").resolve())
-    detector = DINOv2AnomalyDetector(
+    detector = DINOv2AnomalyDetector( # 创建模型主类
         model_path=model_path, config=config, logger=None,
     )
-    detector.load(ckpt_path)
+    detector.load(ckpt_path) # 为 detector 加载 checkpoint 权重
 
-    onnx_model = FullAnomalyDetectorONNX(
+    onnx_model = FullAnomalyDetectorONNX( # 主要的前向传播
         dino_encoder=detector.feature_extractor.encoder,
         projection=detector.projection,
         discriminator=detector.discriminator,
@@ -258,34 +204,6 @@ def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17)
         opset_version=opset_version,
     )
     print(f"[OK] ONNX model exported to {onnx_path}")
-
-
-def export_full_student_onnx(detector, pca_student, onnx_path, config,
-                              target_size=518, opset_version=17):
-    """导出 PCA Student 模式端到端 ONNX 模型 (image → heatmaps)。"""
-    device = config.device
-
-    model = FullAnomalyDetectorWithStudentONNX(
-        dino_encoder=detector.feature_extractor.encoder,
-        projection=detector.projection,
-        discriminator=detector.discriminator,
-        pca_student=pca_student,
-        layer_indices=config.layer_indices,
-        embed_patch_size=config.patch_size,
-        target_size=target_size,
-    )
-    model.to(device).eval()
-
-    dummy_image = torch.randn(1, 3, target_size, target_size, device=device)
-
-    Path(onnx_path).parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(
-        model, dummy_image, onnx_path,
-        input_names=['image'],
-        output_names=['heatmaps', 'image_scores'],
-        opset_version=opset_version,
-    )
-    print(f"[OK] Full ONNX model (with PCA Student) exported to {onnx_path}")
 
 
 # ─── 验证 ──────────────────────────────────────────────────────────
@@ -335,51 +253,15 @@ def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3):
           f"ONNX matches PyTorch within {atol:.0e}")
 
 
-def verify_full_student_onnx(detector, pca_student, onnx_path, config,
-                              target_size=518, atol=1e-3):
-    """验证 PCA Student 模式 ONNX 模型。"""
-    if not _ort_available():
-        return
-    import onnxruntime as ort
-
-    device = config.device
-
-    pt_model = FullAnomalyDetectorWithStudentONNX(
-        dino_encoder=detector.feature_extractor.encoder,
-        projection=detector.projection,
-        discriminator=detector.discriminator,
-        pca_student=pca_student,
-        layer_indices=config.layer_indices,
-        embed_patch_size=config.patch_size,
-        target_size=target_size,
-    )
-    pt_model.to(device).eval()
-
-    images = torch.randn(1, 3, target_size, target_size, device=device)
-
-    with torch.no_grad():
-        pt_heatmaps, pt_scores = pt_model(images)
-
-    session = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
-    ort_hm, ort_sc = session.run(None, {
-        'image': images.cpu().numpy().astype(np.float32),
-    })
-
-    hm_diff = np.abs(pt_heatmaps.cpu().numpy() - ort_hm).max()
-    sc_diff = np.abs(pt_scores.cpu().numpy() - ort_sc).max()
-
-    print(f"\n  Verification (target={target_size}, PCA Student embedded):")
-    print(f"    heatmaps max diff:     {hm_diff:.2e}")
-    print(f"    image_scores max diff: {sc_diff:.2e}")
-    print(f"  {'[PASS]' if max(hm_diff, sc_diff) < atol else '[FAIL]'} "
-          f"ONNX matches PyTorch within {atol:.0e}")
-
-
 # ─── CLI ──────────────────────────────────────────────────────────
 
 def main():
+    #
+    # ipdb.set_trace()
+
+    # 解析命令行参数
     parser = argparse.ArgumentParser(
-        description="Export model to ONNX (SVD or PCA Student mode)"
+        description="Export model to ONNX"
     )
     parser.add_argument('--category', type=str, required=True)
     parser.add_argument('--k_shot', type=int, default=None)
@@ -388,14 +270,10 @@ def main():
                         help='默认从 config.toml 读取')
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--opset', type=int, default=17)
-    parser.add_argument(
-        '--pca_mode', type=str, choices=['svd', 'student'], default='svd',
-        help='PCA 模式:\n'
-             '  svd     (默认) mask 外部 SVD 计算传入\n'
-             '  student 训练 PCA Student → 保存 .pth → 导出端到端 ONNX'
-    )
     args = parser.parse_args()
 
+
+    # 日志
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
@@ -403,104 +281,39 @@ def main():
     )
     logger = logging.getLogger("export_onnx")
 
+
+    # 准备路径
     category = args.category
     ckpt_dir = Path('model_ckpt') / category
     onnx_dir = Path('model_onnx')
     onnx_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.k_shot is not None:
+    if args.k_shot is not None: # 如果指定了 k_shot, 则使用少样本训练的 checkpoint
         base = f"{category}_k{args.k_shot}_s{args.shot_seed}"
         ckpt_path = ckpt_dir / f"{base}_best_ckpt.pth"
     else:
-        base = f"{category}"
+        base = f"{category}"# 默认使用全量训练的 checkpoint
         ckpt_path = ckpt_dir / f"{category}_best_ckpt.pth"
 
-    if not ckpt_path.exists():
+    if not ckpt_path.exists(): # 检查 checkpoint 是否存在
         print(f"[ERROR] Checkpoint not found: {ckpt_path}")
         return
 
+
+    # 加载配置
     cfg = load_config('config.toml')
     config = build_model_config(cfg, 'cuda' if torch.cuda.is_available() else 'cpu')
     target_size = args.target_size or config.target_size
     device = config.device
 
-    if args.pca_mode == 'student':
-        # ── PCA Student 模式 ──
-        # Step 1: 复用 Detector.train_pca_student() 训练 PCA Student
-        model_path = str(Path("facebookresearch_dinov2_main").resolve())
-        detector = DINOv2AnomalyDetector(
-            model_path=model_path, config=config, logger=logger,
-        )
-        detector.load(str(ckpt_path))
+    onnx_path = onnx_dir / f"{base}_full.onnx"
+    print(f"Exporting: {ckpt_path} -> {onnx_path}")
+    export_onnx(str(ckpt_path), str(onnx_path), config,
+                target_size=target_size, opset_version=args.opset)
 
-        # 准备训练数据
-        train_transform, _, _ = get_transform(
-            size=target_size, isize=target_size,
-            augment=False, color_augment=False,
-        )
-        train_loader, _ = get_dataloader(
-            root_dir=cfg["paths"]["mvtec_base_dir"],
-            category=category,
-            dataset_type="mvtec",
-            train_transform=train_transform,
-            test_transform=train_transform,
-            gt_transform=train_transform,
-            batch_size=config.batch_size,
-            num_workers=4,
-            k_shot=args.k_shot,
-            shot_seed=args.shot_seed,
-        )
-        detector.set_category(category)
-
-        # 临时覆盖配置, 强制启用 PCA mask + PCA Student
-        config.use_pca_mask = True
-        config.use_pca_student = True
-
-        print(f"\n{'='*60}")
-        print(f"Step 1/2: Training PCA Student (reusing Trainer.train_pca_student)")
-        print(f"{'='*60}")
-        detector.train_pca_student(train_loader)
-
-        if detector.pca_student is None:
-            print("[ERROR] PCA Student training failed.")
-            return
-
-        # 保存 PCA Student .pth
-        pca_student_pth = onnx_dir / f"{base}_pca_student.pth"
-        pca_student_pth.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            'pca_student_state': detector.pca_student.state_dict(),
-            'hidden_dims': detector.pca_student.hidden_dims,
-            'input_dim': detector.pca_student.input_dim,
-        }, str(pca_student_pth))
-        logger.info(f"PCA Student weights saved to {pca_student_pth}")
-
-        # Step 2: 导出端到端 ONNX
-        full_student_onnx = onnx_dir / f"{base}_full_student.onnx"
-        print(f"\n{'='*60}")
-        print(f"Step 2/2: Exporting full model -> {full_student_onnx}")
-        print(f"{'='*60}")
-        export_full_student_onnx(
-            detector, detector.pca_student, str(full_student_onnx), config,
-            target_size=target_size, opset_version=args.opset,
-        )
-
-        if args.verify:
-            verify_full_student_onnx(
-                detector, detector.pca_student, str(full_student_onnx), config,
-                target_size=target_size,
-            )
-
-    else:
-        # ── SVD 模式 (默认) ──
-        onnx_path = onnx_dir / f"{base}_full.onnx"
-        print(f"Exporting (SVD mode): {ckpt_path} -> {onnx_path}")
-        export_onnx(str(ckpt_path), str(onnx_path), config,
-                    target_size=target_size, opset_version=args.opset)
-
-        if args.verify:
-            verify_onnx(str(ckpt_path), str(onnx_path), config,
-                        target_size=target_size)
+    if args.verify:
+        verify_onnx(str(ckpt_path), str(onnx_path), config,
+                    target_size=target_size)
 
 
 if __name__ == '__main__':
