@@ -24,7 +24,7 @@ echo "  1) dino2_only      — DINOv2 单分支 (无 PCA, 无 Perlin)"
 echo "  2) pca_only        — DINOv2 + PCA (无 Perlin)"
 echo "  3) no_augment      — Full DuAD 无数据增强"
 echo "  4) channel_concat  — 通道拼接聚合 (替代邻域聚合)"
-echo "  5) fusion          — 门控融合聚合 (neighborhood + channel_concat 自适应加权)"
+echo "  5) neighborhood     — 邻域聚合 (替代门控融合)"
 echo ""
 while true; do
     read -p "输入编号 [1-5]: " variant_choice
@@ -41,9 +41,9 @@ while true; do
         4) VARIANT="channel_concat"
            ABLATION_FLAG="--aggregation channel_concat"
            ABLATION_LABEL="Channel concat aggregation (no neighborhood)"; break ;;
-        5) VARIANT="fusion"
-           ABLATION_FLAG="--aggregation fusion"
-           ABLATION_LABEL="Gated fusion aggregation (neighborhood + channel_concat)"; break ;;
+        5) VARIANT="neighborhood"
+           ABLATION_FLAG="--aggregation neighborhood"
+           ABLATION_LABEL="Neighborhood aggregation (no fusion)"; break ;;
         *) echo "无效输入，请输入 1-5" ;;
     esac
 done

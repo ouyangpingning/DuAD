@@ -81,11 +81,8 @@ bash visualize_all_tmux.sh
 ### Export ONNX
 
 ```bash
-# SVD mode (default)
 python src/deploy/export_onnx.py --category bottle
-
-# PCA Student mode (end-to-end, no SVD at inference)
-python src/deploy/export_onnx.py --category bottle --pca_mode student --verify
+python src/deploy/export_onnx.py --category bottle --verify
 
 # Interactive batch export
 bash export_onnx_all_tmux.sh
@@ -113,7 +110,6 @@ python src/analysis/aggregate_results.py --csv
 ├── src/
 │   ├── main.py                      # Training entry point
 │   ├── DuAD.py                      # Core model (Trainer, Predictor, etc.)
-│   ├── benchmark_pca_mask.py        # PCA mask speed benchmark (SVD vs MLP)
 │   ├── config.py                    # TOML → ModelConfig parser
 │   ├── utils.py                     # Metrics, logging, DINOv2 loader
 │   ├── commen_import.py             # Shared third-party imports

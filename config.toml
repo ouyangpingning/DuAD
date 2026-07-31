@@ -18,7 +18,7 @@ use_scheduler = true # 是否使用学习率调度器，通常有助于训练稳
 scheduler_type = "cosine" # 学习率调度器类型: "cosine" (CosineAnnealingLR, 默认) 或 "multistep" (MultiStepLR, 类似 SuperSimpleNet)
 multistep_milestones = [0.8, 0.9] # MultiStepLR 的 milestone 比例 (仅 scheduler_type="multistep" 时生效)
 multistep_gamma = 0.4 # MultiStepLR 衰减因子 (仅 scheduler_type="multistep" 时生效)
-warmup_epochs = 3 # 前 N 个 meta-epoch 不参与最佳 checkpoint 选择, 避免初始化偏差主导早期评分
+warmup_epochs = 5 # 前 N 个 meta-epoch 不参与最佳 checkpoint 选择, 避免初始化偏差主导早期评分
 
 [noise]
 noise_std = 0.5 # 高斯噪声的标准差，较大的值会增加噪声强度，但过大可能会破坏特征信息
