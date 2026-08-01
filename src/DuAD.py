@@ -23,6 +23,7 @@ class ModelConfig:
     gan_epochs: int = 4
     meta_epochs: int = 80
     batch_size: int = 8  # 批次大小
+    warmup_epochs: int = 5  # 预热期 meta-epoch 数: 前 N 个 epoch 不参与 best checkpoint 选择 (config.toml 覆盖)
     
     # 噪声参数
     noise_std: float = 0.5

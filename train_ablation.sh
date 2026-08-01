@@ -23,7 +23,7 @@ echo "请选择消融变体:"
 echo "  1) dino2_only      — DINOv2 单分支 (无 PCA, 无 Perlin)"
 echo "  2) pca_only        — DINOv2 + PCA (无 Perlin)"
 echo "  3) no_augment      — Full DuAD 无数据增强"
-echo "  4) channel_concat  — 通道拼接聚合 (替代邻域聚合)"
+echo "  4) channel_concat  — 通道拼接聚合 (替代门控融合)"
 echo "  5) neighborhood     — 邻域聚合 (替代门控融合)"
 echo ""
 while true; do

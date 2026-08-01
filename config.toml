@@ -6,7 +6,7 @@ target_size = 518 # 设置的输入图像尺寸，模型会自动调整输入图
 layer_indices = [2, 5, 8, 11] # 选择的 DINOv2 层索引，通常对应于不同层次的特征表示
 input_planes = 1536    # 384 * len(layer_indices) ， 这个是输入到投影器的特征维度，通常是dinov2输出的每层特征维度的总和
 hidden_dim = 1536 # 判别器的输入维度，通常设置为输入维度的相同大小以保持信息流畅
-aggregation_type = "fusion" # 特征聚合方式: "neighborhood" (邻域聚合, 默认) / "channel_concat" (通道拼接, 消融B4) / "fusion" (门控融合, 自适应加权两分支)
+aggregation_type = "fusion" # 特征聚合方式: "fusion" (门控融合, 默认) / "neighborhood" (邻域聚合, 消融对比) / "channel_concat" (通道拼接, 消融对比)
 
 [training]
 meta_epochs = 150 # 元训练的总轮数，通常需要较多轮数以充分训练模型

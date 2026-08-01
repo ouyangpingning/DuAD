@@ -59,6 +59,7 @@ def build_model_config(cfg: dict, device: str = "cuda") -> ModelConfig:
         scheduler_type=train.get("scheduler_type", "cosine"),
         multistep_milestones=list(train.get("multistep_milestones", [0.8, 0.9])),
         multistep_gamma=train.get("multistep_gamma", 0.4),
+        warmup_epochs=train.get("warmup_epochs", 5),
         device=device,
     )
 

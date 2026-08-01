@@ -151,7 +151,7 @@ def train_category(
         # === 保存阶段 ===
         # 预热期: 前 warmup_epochs 个 meta-epoch 跳过 best checkpoint 选择,
         # 避免随机初始化参数主导早期评分 (少样本下尤其明显)
-        warmup_epochs = getattr(config, 'warmup_epochs', 5)
+        warmup_epochs = config.warmup_epochs
         if epoch < warmup_epochs:
             logger.info(f"  [Warmup] epoch {epoch+1}/{warmup_epochs}, 跳过 best 检查")
         else:
