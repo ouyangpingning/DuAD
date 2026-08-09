@@ -1278,6 +1278,8 @@ class DINOv2AnomalyDetector:
         self.trainer = None # 训练器实例化放在fit方法中，避免不必要的资源占用
         self.predictor = None # 预测器实例化放在predict方法中，避免不必要的资源占用
         self.current_category = None # 当前处理的类别，用于PCA掩模的类别特定控制
+        self._pca_mean = None  # checkpoint 恢复的 PCA SVD 参数 (CPU)
+        self._pca_component = None
 
         # 记录初始化信息
         self._log_init()
@@ -1322,6 +1324,7 @@ class DINOv2AnomalyDetector:
             )
             if self.current_category is not None and self.trainer.pca_generator:
                 self.trainer.pca_generator.set_category(self.current_category)
+                self._restore_pca(self.trainer.pca_generator)
         return self.trainer.train_epoch(train_dataloader)
     
     def predict(
@@ -1340,18 +1343,31 @@ class DINOv2AnomalyDetector:
             )
             if self.current_category is not None and self.predictor.pca_generator:
                 self.predictor.pca_generator.set_category(self.current_category)
+                self._restore_pca(self.predictor.pca_generator)
 
         return self.predictor.predict(test_dataloader, aggregation)
     
     def save(self, path: str, epoch: int = 0, scores: dict = None):
-        """保存模型权重（仅 Projection + Discriminator）"""
+        """保存模型权重（Projection + Discriminator + 聚合器 gate_mlp + PCA SVD 参数）"""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         state = {
             'proj_state': self.projection.state_dict(),
             'dsc_state': self.discriminator.state_dict(),
+            # fusion 聚合的门控 MLP 虽不训练, 但必须持久化:
+            # 否则每次重建 detector 都会得到新的随机初始化, 推理/导出无法复现
+            'agg_state': self.feature_extractor.aggregator.state_dict(),
             'epoch': epoch,
             'scores': scores,
         }
+        # PCA SVD 参数 (训练第一个 batch 的聚合特征求得, 持久化后推理无需重算)
+        pca = None
+        if self.trainer is not None and self.trainer.pca_generator is not None:
+            pca = self.trainer.pca_generator
+        elif self.predictor is not None and self.predictor.pca_generator is not None:
+            pca = self.predictor.pca_generator
+        if pca is not None:
+            state['pca_mean'] = pca._pca_mean        # CPU tensor; skip 类别为 None
+            state['pca_component'] = pca._pca_component
         torch.save(state, path)
         self.logger.info(f"Checkpoint saved to {path}")
 
@@ -1360,10 +1376,32 @@ class DINOv2AnomalyDetector:
         state = torch.load(path, map_location=self.config.device)
         self.projection.load_state_dict(state['proj_state'])
         self.discriminator.load_state_dict(state['dsc_state'])
+        # 兼容旧 checkpoint (无 agg_state): 保持随机初始化 gate_mlp
+        if 'agg_state' in state:
+            self.feature_extractor.aggregator.load_state_dict(state['agg_state'])
+        else:
+            self.logger.warning(
+                "Checkpoint has no agg_state (old format); gate_mlp stays "
+                "randomly initialized and will differ from the training run"
+            )
+        # PCA SVD 参数: 重建 Trainer/Predictor 时注入
+        self._pca_mean = state.get('pca_mean')
+        self._pca_component = state.get('pca_component')
         self.trainer = None
         self.predictor = None
         self.logger.info(f"Checkpoint loaded from {path}")
         return state.get('epoch', 0), state.get('scores', None), None, -1
+
+    def _restore_pca(self, pca_generator):
+        """把 checkpoint 里的 PCA SVD 参数注入到新创建的 pca_generator。
+
+        必须在 set_category() 之后调用 (set_category 会清空 SVD 缓存)。
+        skip 类别 (缓存为 None) 不注入, 推理时直接返回全 1 掩码。
+        """
+        if pca_generator is not None and self._pca_component is not None:
+            pca_generator._pca_mean = self._pca_mean.to(self.config.device)
+            pca_generator._pca_component = self._pca_component.to(self.config.device)
+            pca_generator._pca_category = self.current_category
     
     def evaluate(
                 self,
