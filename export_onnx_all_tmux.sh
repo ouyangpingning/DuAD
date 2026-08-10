@@ -1,6 +1,11 @@
 #!/bin/bash
 # 交互式 ONNX 模型导出脚本 (单类别)
 # 用法: bash export_onnx_all_tmux.sh
+#
+# 导出模式由 checkpoint 自动决定:
+#   [PCA inline] ckpt 含 pca_mean/pca_component (新格式) → 输入仅 image,
+#                掩码在 ONNX 图内计算 (推荐)
+#   [外部 mask]  旧格式 ckpt → 输入 image + mask, 掩码由部署端计算
 
 work_env="${CONDA_DEFAULT_ENV:-base}"
 if [ "$work_env" = "base" ]; then
@@ -20,26 +25,7 @@ echo "  ONNX 模型导出 - 交互式配置"
 echo "================================================"
 echo ""
 
-# --- 1. PCA 模式 ---
-echo "请选择 PCA 推理模式:"
-echo "  [1] SVD 模式 (默认)"
-echo "      mask 在 Python 端用 SVD 计算, 导出标准 ONNX (image+mask → heatmaps)"
-echo "  [2] PCA Student 模式"
-echo "      自动训练 PCA Student MLP → 导出端到端 ONNX (image → heatmaps)"
-read -p "输入 [1/2] (默认=1): " pca_choice
-pca_choice=${pca_choice:-1}
-
-if [ "$pca_choice" == "2" ]; then
-    pca_mode="student"
-    mode_label="PCA Student (端到端)"
-else
-    pca_mode="svd"
-    mode_label="SVD (mask 外部传入)"
-fi
-
-echo ""
-
-# --- 2. 选择 checkpoint ---
+# --- 1. 选择 checkpoint ---
 echo "选择要使用的 checkpoint (对应训练时的配置):"
 echo "  [1] 全样本    → model_ckpt/{category}/{category}_best_ckpt.pth"
 echo "  [2] 少样本    → model_ckpt/{category}/{category}_k{K}_s{seed}_best_ckpt.pth"
@@ -61,10 +47,12 @@ fi
 
 echo ""
 
-# --- 3. 类别 ---
-echo "可用的 MVTec AD 类别:"
-echo "  bottle cable capsule carpet grid hazelnut leather metal_nut"
-echo "  pill screw tile toothbrush transistor wood zipper"
+# --- 2. 类别 ---
+echo "可用类别:"
+echo "  MVTec AD: bottle cable capsule carpet grid hazelnut leather metal_nut"
+echo "            pill screw tile toothbrush transistor wood zipper"
+echo "  VisA:     candle capsules cashew chewinggum fryum macaroni1 macaroni2"
+echo "            pcb1 pcb2 pcb3 pcb4 pipe_fryum"
 echo ""
 read -p "输入类别名: " category
 
@@ -75,7 +63,7 @@ fi
 
 echo ""
 
-# --- 4. 验证 ---
+# --- 3. 验证 ---
 echo "导出后验证 (--verify):"
 echo "  用 ONNX Runtime 和 PyTorch 分别推理同一随机输入, 逐元素对比输出,"
 echo "  确保 ONNX 模型与 PyTorch 模型一致 (需要 pip install onnxruntime)。"
@@ -93,10 +81,10 @@ echo ""
 echo "================================================"
 echo "  配置摘要"
 echo "================================================"
-echo "  PCA 模式:     ${mode_label}"
 echo "  Checkpoint:   ${ckpt_label}"
 echo "  类别:         ${category}"
 echo "  导出后验证:   ${verify_label}"
+echo "  导出模式:     自动 (ckpt 含 PCA 参数 → 内联; 否则外部 mask)"
 echo "  输出目录:     ${work_path}/model_onnx/"
 echo "================================================"
 echo ""
@@ -105,7 +93,7 @@ read -p "按回车开始导出，或 Ctrl+C 取消... "
 echo ""
 
 # ==================== 执行 ====================
-cmd="python src/deploy/export_onnx.py --category ${category} ${k_shot_arg} --pca_mode ${pca_mode} ${verify_flag}"
+cmd="python src/deploy/export_onnx.py --category ${category} ${k_shot_arg} ${verify_flag}"
 
 echo "执行: ${cmd}"
 echo ""
@@ -118,25 +106,14 @@ $cmd
 echo ""
 echo "================================================"
 if [ $? -eq 0 ]; then
+    if [ -n "$k_shot_arg" ]; then
+        base="${category}_k${k_shot}_s${shot_seed}"
+    else
+        base="${category}"
+    fi
     echo "  导出完成！"
     echo ""
-    echo "  产物:"
-    if [ "$pca_mode" == "student" ]; then
-        if [ -n "$k_shot_arg" ]; then
-            base="${category}_k${k_shot}_s${shot_seed}"
-        else
-            base="${category}"
-        fi
-        echo "    model_onnx/${base}_pca_student.pth"
-        echo "    model_onnx/${base}_full_student.onnx"
-    else
-        if [ -n "$k_shot_arg" ]; then
-            base="${category}_k${k_shot}_s${shot_seed}"
-        else
-            base="${category}"
-        fi
-        echo "    model_onnx/${base}_full.onnx"
-    fi
+    echo "  产物: model_onnx/${base}_full.onnx"
 else
     echo "  导出失败！请检查错误信息。"
 fi
