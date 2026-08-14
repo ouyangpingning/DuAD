@@ -17,6 +17,7 @@ ONNX 模型导出脚本
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -304,6 +305,45 @@ def _check_aggregator_consistency(detector, onnx_model, target_size, atol=1e-3):
     return ok
 
 
+def _write_deploy_metadata(onnx_path: str, deploy: dict):
+    """把训练时标定的部署阈值写入 ONNX metadata_props（模型自包含）。
+
+    部署端 (onnx_infer.py) 按 duad.* key 读取, 免再拿验证集标定。
+    旧 ckpt 无 deploy 字段时跳过, 本地走 *.threshold.json 兜底。
+    """
+    if not deploy:
+        return
+    try:
+        import onnx
+        from onnx import StringStringEntryProto
+    except ImportError:
+        print("[WARN] onnx package not available, skip writing deploy metadata")
+        return
+
+    model = onnx.load(onnx_path)
+    props = {mp.key: mp.value for mp in model.metadata_props}
+
+    def put(k, v):
+        if v is not None:
+            props[k] = str(v)
+
+    put("duad.category", deploy.get("category"))
+    put("duad.image_threshold", deploy.get("image_threshold"))
+    put("duad.image_threshold_method", deploy.get("image_threshold_method"))
+    put("duad.pixel_threshold", deploy.get("pixel_threshold"))
+    put("duad.pixel_f1_max", deploy.get("pixel_f1_max"))
+    put("duad.calibrated_at", deploy.get("calibrated_at"))
+    props["duad.deploy"] = json.dumps(deploy, ensure_ascii=False)
+
+    del model.metadata_props[:]
+    for k, v in props.items():
+        model.metadata_props.append(StringStringEntryProto(key=k, value=v))
+    onnx.save(model, onnx_path)
+    print(f"[INFO] Deploy thresholds written to ONNX metadata: "
+          f"image={deploy.get('image_threshold')}, "
+          f"pixel={deploy.get('pixel_threshold')}")
+
+
 def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17):
     """导出完整 ONNX 模型 (PCA 内联; 无 pca 数据时回退 mask 外部输入)。"""
     device = config.device
@@ -344,6 +384,9 @@ def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17)
             dynamic_axes=dynamic_axes,
         )
         print("[WARN] No PCA params in checkpoint; falling back to external mask input")
+
+    # 训练时标定的部署阈值随模型写入 metadata（旧 ckpt 无 deploy 字段则跳过）
+    _write_deploy_metadata(onnx_path, getattr(detector, "_deploy", None))
     print(f"[OK] ONNX model exported to {onnx_path}")
 
 

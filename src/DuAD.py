@@ -1280,6 +1280,7 @@ class DINOv2AnomalyDetector:
         self.current_category = None # 当前处理的类别，用于PCA掩模的类别特定控制
         self._pca_mean = None  # checkpoint 恢复的 PCA SVD 参数 (CPU)
         self._pca_component = None
+        self._deploy = None  # checkpoint 里的部署阈值 (训练时标定, 导出 ONNX 时写 metadata)
 
         # 记录初始化信息
         self._log_init()
@@ -1347,8 +1348,8 @@ class DINOv2AnomalyDetector:
 
         return self.predictor.predict(test_dataloader, aggregation)
     
-    def save(self, path: str, epoch: int = 0, scores: dict = None):
-        """保存模型权重（Projection + Discriminator + 聚合器 gate_mlp + PCA SVD 参数）"""
+    def save(self, path: str, epoch: int = 0, scores: dict = None, deploy: dict = None):
+        """保存模型权重（Projection + Discriminator + 聚合器 gate_mlp + PCA SVD 参数 + 部署阈值）"""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         state = {
             'proj_state': self.projection.state_dict(),
@@ -1359,6 +1360,9 @@ class DINOv2AnomalyDetector:
             'epoch': epoch,
             'scores': scores,
         }
+        # 部署阈值 (训练期标定): 图像级 youden 阈值 + 像素级 F1-max 阈值
+        if deploy is not None:
+            state['deploy'] = deploy
         # PCA SVD 参数 (训练第一个 batch 的聚合特征求得, 持久化后推理无需重算)
         pca = None
         if self.trainer is not None and self.trainer.pca_generator is not None:
@@ -1387,10 +1391,12 @@ class DINOv2AnomalyDetector:
         # PCA SVD 参数: 重建 Trainer/Predictor 时注入
         self._pca_mean = state.get('pca_mean')
         self._pca_component = state.get('pca_component')
+        # 部署阈值 (旧 ckpt 无 deploy 字段时为 None)
+        self._deploy = state.get('deploy')
         self.trainer = None
         self.predictor = None
         self.logger.info(f"Checkpoint loaded from {path}")
-        return state.get('epoch', 0), state.get('scores', None), None, -1
+        return state.get('epoch', 0), state.get('scores', None), self._deploy, -1
 
     def _restore_pca(self, pca_generator):
         """把 checkpoint 里的 PCA SVD 参数注入到新创建的 pca_generator。

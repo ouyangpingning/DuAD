@@ -4,6 +4,8 @@ from dataset import get_dataloader, get_transform
 from DuAD import DINOv2AnomalyDetector, ModelConfig
 from utils import setup_logger, set_seed, clean_GPU_Cache
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
+from threshold_utils import compute_image_deploy_threshold, pixel_f1_max_threshold, evaluate
+from datetime import datetime
 import click
 
 # 主要训练函数
@@ -199,6 +201,39 @@ def train_category(
         'pixel_f1': full_metrics.get('pixel_f1', 0.0),
         'pixel_pro': full_metrics.get('pixel_pro', 0.0),
     }
+    
+    # === 部署阈值标定（训练时就地算，随 ckpt 持久化，部署端免再拿验证集标定）===
+    # scores 是 predict 返回的原始 patch-max 分数（未归一化），与 ONNX image_scores
+    # 同口径；masks 是上采样+高斯平滑后的原始 amap，与 ONNX hm_smooth 同口径。
+    normal_scores = [float(s) for s, l in zip(scores, labels_gt) if int(l) == 0]
+    abnormal_scores = [float(s) for s, l in zip(scores, labels_gt) if int(l) == 1]
+    logger.info(f"Deploy threshold calibration: {len(normal_scores)} normal, "
+                f"{len(abnormal_scores)} abnormal")
+
+    image_thr = compute_image_deploy_threshold(normal_scores, abnormal_scores,
+                                               method="youden")
+    pixel_thr = pixel_f1_max_threshold(masks, masks_gt) if len(masks) else \
+        {"threshold": -1.0, "f1": -1.0}
+
+    deploy = {
+        "category": atype,
+        "image_threshold": image_thr["recommended"],
+        "image_threshold_method": image_thr["method"],
+        "image_thresholds": image_thr["thresholds"],
+        "pixel_threshold": pixel_thr["threshold"],
+        "pixel_f1_max": pixel_thr["f1"],
+        "calibrated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    backtest = evaluate(deploy["image_threshold"], normal_scores, abnormal_scores)
+    logger.info(f"  Image deploy threshold (youden): {deploy['image_threshold']:.4f}")
+    logger.info(f"    backtest: {backtest}")
+    logger.info(f"  Pixel F1-max threshold: {pixel_thr['threshold']:.4f} "
+                f"(F1={pixel_thr['f1']:.4f})")
+
+    # 把阈值写回 best checkpoint（覆盖训练循环里 save 的无阈值版本）
+    model.save(best_ckpt_path, epoch=best_epoch, scores=best_score_full, deploy=deploy)
+    logger.info(f"Deploy thresholds embedded into checkpoint: {best_ckpt_path}")
     
     # 训练完成总结
     logger.info(f"\n{'='*60}")
