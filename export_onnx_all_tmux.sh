@@ -94,15 +94,17 @@ read -p "按回车开始导出，或 Ctrl+C 取消... "
 echo ""
 
 # ==================== 执行 ====================
-cmd="python src/deploy/export_onnx.py --category \"${categories_input}\" ${k_shot_arg} ${verify_flag}"
-
-echo "执行: ${cmd}"
+# 注意: 不能拼成字符串后 $cmd 执行, 变量里的引号不会重新解析,
+# 多类别会被 word splitting 拆散 (argparse 报 unrecognized arguments)
+echo "执行: python src/deploy/export_onnx.py --category \"${categories_input}\" ${k_shot_arg} ${verify_flag}"
 echo ""
 
 cd "$work_path"
 conda activate "$work_env" 2>/dev/null
 
-$cmd
+# "${categories_input}" 加引号 → 整个类别列表作为一个参数;
+# ${k_shot_arg} / ${verify_flag} 不加引号 → 按空格拆分为独立参数
+python src/deploy/export_onnx.py --category "${categories_input}" ${k_shot_arg} ${verify_flag}
 
 echo ""
 echo "================================================"
