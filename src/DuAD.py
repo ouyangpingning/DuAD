@@ -325,6 +325,10 @@ class PCAMaskGenerator:
         self._pca_mean = None       # [D] 均值向量
         self._pca_component = None  # [D] 第一主成分方向
         self._pca_category = None   # 缓存对应的类别名 (避免跨类别混用)
+        # 翻转方向缓存: 首次计算掩模时确定一次 (中心占比≤35% → True),
+        # 之后所有 batch/图像固定复用, 不再逐图判断 (避免阈值贴近翻转线时
+        # 训练批次间/推理图间掩模方向来回抖动)
+        self._pca_flip = None
     def set_category(self, category: str):
         """
         设置当前处理的类别
@@ -337,6 +341,7 @@ class PCAMaskGenerator:
             self._pca_mean = None
             self._pca_component = None
             self._pca_category = None
+            self._pca_flip = None
         self.current_category = category
 
     def __call__(
@@ -421,7 +426,11 @@ class PCAMaskGenerator:
             center_mask = mask_2d[h_start:h_end, w_start:w_end]
 
         # 如果中心区域前景太少，反转掩模
-        if center_mask.sum().item() <= center_mask.numel() * 0.35:
+        # 方向只在该类别第一次计算时确定一次 (与 SVD 缓存同一 batch),
+        # 之后固定复用, 避免逐图判断导致掩模方向抖动
+        if self._pca_flip is None:
+            self._pca_flip = center_mask.sum().item() <= center_mask.numel() * 0.35
+        if self._pca_flip:
             mask = (-first_pc) > self.threshold
             mask_2d = mask.reshape(H, W)
 
@@ -1280,6 +1289,7 @@ class DINOv2AnomalyDetector:
         self.current_category = None # 当前处理的类别，用于PCA掩模的类别特定控制
         self._pca_mean = None  # checkpoint 恢复的 PCA SVD 参数 (CPU)
         self._pca_component = None
+        self._pca_flip = None  # checkpoint 恢复的翻转方向
         self._deploy = None  # checkpoint 里的部署阈值 (训练时标定, 导出 ONNX 时写 metadata)
 
         # 记录初始化信息
@@ -1372,6 +1382,7 @@ class DINOv2AnomalyDetector:
         if pca is not None:
             state['pca_mean'] = pca._pca_mean        # CPU tensor; skip 类别为 None
             state['pca_component'] = pca._pca_component
+            state['pca_flip'] = pca._pca_flip        # 翻转方向 (True/False/None)
         torch.save(state, path)
         self.logger.info(f"Checkpoint saved to {path}")
 
@@ -1391,6 +1402,7 @@ class DINOv2AnomalyDetector:
         # PCA SVD 参数: 重建 Trainer/Predictor 时注入
         self._pca_mean = state.get('pca_mean')
         self._pca_component = state.get('pca_component')
+        self._pca_flip = state.get('pca_flip')
         # 部署阈值 (旧 ckpt 无 deploy 字段时为 None)
         self._deploy = state.get('deploy')
         self.trainer = None
@@ -1403,11 +1415,13 @@ class DINOv2AnomalyDetector:
 
         必须在 set_category() 之后调用 (set_category 会清空 SVD 缓存)。
         skip 类别 (缓存为 None) 不注入, 推理时直接返回全 1 掩码。
+        翻转方向 (flip) 与 mean/component 一起固化, 推理不再逐图判断。
         """
         if pca_generator is not None and self._pca_component is not None:
             pca_generator._pca_mean = self._pca_mean.to(self.config.device)
             pca_generator._pca_component = self._pca_component.to(self.config.device)
             pca_generator._pca_category = self.current_category
+            pca_generator._pca_flip = self._pca_flip
     
     def evaluate(
                 self,

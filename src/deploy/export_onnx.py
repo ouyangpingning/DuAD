@@ -188,9 +188,12 @@ class FullAnomalyDetectorONNX(_BaseONNXModel):
             self.pca_threshold = float(pca_params['threshold'])
             self.pca_border = float(pca_params['border'])
             self.pca_kernel_size = int(pca_params['kernel_size'])
+            # 固化翻转方向 (Python bool, 导出时写入图; None=旧ckpt逐图判断)
+            self.pca_flip = pca_params.get('flip')
             self.pca_inline = True
         else:
             self.pca_inline = False
+            self.pca_flip = None
 
     def forward(self, image, mask=None):
         B = image.shape[0]
@@ -214,24 +217,34 @@ class FullAnomalyDetectorONNX(_BaseONNXModel):
         return self._post_process(scores, B)
 
     def _pca_mask(self, features, B):
-        """内联 PCAMaskGenerator.compute_background_mask 完整逻辑。
+        """内联 PCAMaskGenerator.compute_background_mask 逻辑。
 
-        投影 → 阈值 → 中心反转 → 膨胀 + 闭运算, 全部 batch 向量化,
-        与 DuAD.PCAMaskGenerator 逐元素一致 (形态学为 max_pool2d, 可导出)。
+        投影 → 阈值 → (固化方向, 不再逐图判断) → 膨胀 + 闭运算。
+        pca_flip 在导出时作为 Python bool 固化进图:
+          - flip=True : 掩模取补集 ~(proj > thr)
+          - flip=False: 直接用 proj > thr
+          - flip=None (旧 ckpt): 回退逐图中心判断 (兼容旧模型行为)
         """
         H, W = self.H, self.W
         feat = features.reshape(B, H * W, -1)
         proj = (feat - self.pca_mean) @ self.pca_component   # [B, N]
         mask_2d = (proj > self.pca_threshold).reshape(B, H, W)
 
-        # 中心区域前景占比 ≤35% 时反转掩码 (float 运算, 避免 bool Where 的 ORT 兼容问题)
-        h0, h1 = int(H * self.pca_border), int(H * (1 - self.pca_border))
-        w0, w1 = int(W * self.pca_border), int(W * (1 - self.pca_border))
-        if h0 < h1 and w0 < w1:
-            center = mask_2d.float()[:, h0:h1, w0:w1]
-            keep = (center.mean(dim=(1, 2), keepdim=True) > 0.35).float()  # [B,1,1]
-            mask_f = mask_2d.float()
-            mask_2d = (keep * mask_f + (1 - keep) * (1 - mask_f)) > 0.5
+        if self.pca_flip is None:
+            # 旧 ckpt 无固化方向: 逐图判断 (与旧版行为一致)
+            h0, h1 = int(H * self.pca_border), int(H * (1 - self.pca_border))
+            w0, w1 = int(W * self.pca_border), int(W * (1 - self.pca_border))
+            if h0 < h1 and w0 < w1:
+                center = mask_2d.float()[:, h0:h1, w0:w1]
+                keep = (center.mean(dim=(1, 2), keepdim=True) > 0.35).float()  # [B,1,1]
+                # 翻转时用负投影重阈值 (与 PyTorch 一致), 非取补集
+                mask_flip = (-proj > self.pca_threshold).reshape(B, H, W)
+                m_f, m_flip_f = mask_2d.float(), mask_flip.float()
+                mask_2d = (keep * m_f + (1 - keep) * m_flip_f) > 0.5
+        elif self.pca_flip:
+            # 固化方向: 与 PCAMaskGenerator 一致, 用负投影重新阈值
+            # ((-proj) > thr), 而非取补集 —— 两者对 |proj|<thr 的 patch 语义不同
+            mask_2d = (-proj > self.pca_threshold).reshape(B, H, W)
 
         # 形态学: 膨胀 → 闭运算 (膨胀+腐蚀), 与 PCAMaskGenerator._morphological_process 一致
         k, pad = self.pca_kernel_size, self.pca_kernel_size // 2
@@ -252,13 +265,19 @@ def _pca_params_from_ckpt(detector, config):
     mean, comp = detector._pca_mean, detector._pca_component
     if mean is None or comp is None:
         return None
-    return {
+    params = {
         'mean': mean,
         'component': comp,
         'threshold': config.pca_threshold,
         'border': config.pca_border,
         'kernel_size': config.pca_kernel_size,
     }
+    # 固化翻转方向: 新 ckpt 含 pca_flip → 写死进图; 旧 ckpt → None (逐图判断回退)
+    params['flip'] = detector._pca_flip
+    if detector._pca_flip is None:
+        print("[WARN] ckpt has no pca_flip (old format); mask direction will "
+              "be decided per-image inside the ONNX graph (old behavior)")
+    return params
 
 
 def _build_detector_and_onnx_model(ckpt_path, config, target_size):
@@ -305,13 +324,13 @@ def _check_aggregator_consistency(detector, onnx_model, target_size, atol=1e-3):
     return ok
 
 
-def _write_deploy_metadata(onnx_path: str, deploy: dict):
+def _write_deploy_metadata(onnx_path: str, deploy: dict, pca_flip=None):
     """把训练时标定的部署阈值写入 ONNX metadata_props（模型自包含）。
 
     部署端 (onnx_infer.py) 按 duad.* key 读取, 免再拿验证集标定。
     旧 ckpt 无 deploy 字段时跳过, 本地走 *.threshold.json 兜底。
     """
-    if not deploy:
+    if not deploy and pca_flip is None:
         return
     try:
         import onnx
@@ -327,21 +346,26 @@ def _write_deploy_metadata(onnx_path: str, deploy: dict):
         if v is not None:
             props[k] = str(v)
 
-    put("duad.category", deploy.get("category"))
-    put("duad.image_threshold", deploy.get("image_threshold"))
-    put("duad.image_threshold_method", deploy.get("image_threshold_method"))
-    put("duad.pixel_threshold", deploy.get("pixel_threshold"))
-    put("duad.pixel_f1_max", deploy.get("pixel_f1_max"))
-    put("duad.calibrated_at", deploy.get("calibrated_at"))
-    props["duad.deploy"] = json.dumps(deploy, ensure_ascii=False)
+    if deploy:
+        put("duad.category", deploy.get("category"))
+        put("duad.image_threshold", deploy.get("image_threshold"))
+        put("duad.image_threshold_method", deploy.get("image_threshold_method"))
+        put("duad.pixel_threshold", deploy.get("pixel_threshold"))
+        put("duad.pixel_f1_max", deploy.get("pixel_f1_max"))
+        put("duad.calibrated_at", deploy.get("calibrated_at"))
+        props["duad.deploy"] = json.dumps(deploy, ensure_ascii=False)
+    # PCA 翻转方向标记: true/false = 固化 (新版), none = 旧版逐图判断
+    if pca_flip is not None:
+        props["duad.pca_flip"] = "true" if pca_flip else "false"
 
     del model.metadata_props[:]
     for k, v in props.items():
         model.metadata_props.append(StringStringEntryProto(key=k, value=v))
     onnx.save(model, onnx_path)
     print(f"[INFO] Deploy thresholds written to ONNX metadata: "
-          f"image={deploy.get('image_threshold')}, "
-          f"pixel={deploy.get('pixel_threshold')}")
+          f"image={deploy.get('image_threshold') if deploy else None}, "
+          f"pixel={deploy.get('pixel_threshold') if deploy else None}, "
+          f"pca_flip={pca_flip}")
 
 
 def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17):
@@ -371,7 +395,8 @@ def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17)
             opset_version=opset_version,
             dynamic_axes=dynamic_axes,
         )
-        print("[INFO] PCA inline mode: mean/1st-PC embedded from checkpoint")
+        print(f"[INFO] PCA inline mode: mean/1st-PC embedded from checkpoint; "
+              f"flip direction = {model.pca_flip}")
     else:
         # 回退: mask 外部输入 (旧 ckpt 无 pca 数据)
         dynamic_axes['mask'] = {0: 'batch'}
@@ -386,7 +411,8 @@ def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17)
         print("[WARN] No PCA params in checkpoint; falling back to external mask input")
 
     # 训练时标定的部署阈值随模型写入 metadata（旧 ckpt 无 deploy 字段则跳过）
-    _write_deploy_metadata(onnx_path, getattr(detector, "_deploy", None))
+    _write_deploy_metadata(onnx_path, getattr(detector, "_deploy", None),
+                           pca_flip=getattr(model, "pca_flip", None))
     print(f"[OK] ONNX model exported to {onnx_path}")
 
 

@@ -53,9 +53,9 @@ color_jitter_categories = ["toothbrush"]              # 颜色抖动
 [category_pca.threshold]  # 为每个类别设置不同的 PCA 阈值，较高的值会使掩码更严格，突出更显著的特征，但过高可能会丢失重要信息
 # mvtecad #
 # 阈值经全类别分析校准 (目标: 实际掩码前景占比 40-60%, 中心占比远离 35% 翻转线)
-bottle = 10.0
+bottle = -25.0
 capsule = 36.0
-screw = 60.0
+screw = -22.0
 metal_nut = 50.0
 pill = 15.0
 hazelnut = 47.0
