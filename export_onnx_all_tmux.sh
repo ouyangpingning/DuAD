@@ -54,12 +54,13 @@ echo "            pill screw tile toothbrush transistor wood zipper"
 echo "  VisA:     candle capsules cashew chewinggum fryum macaroni1 macaroni2"
 echo "            pcb1 pcb2 pcb3 pcb4 pipe_fryum"
 echo ""
-read -p "输入类别名: " category
+read -p "输入类别名，空格分隔多个 (如: bottle screw): " categories_input
 
-if [ -z "$category" ]; then
-    echo "[ERROR] 必须指定一个类别"
+if [ -z "$categories_input" ]; then
+    echo "[ERROR] 必须指定至少一个类别"
     exit 1
 fi
+categories=($categories_input)
 
 echo ""
 
@@ -82,7 +83,7 @@ echo "================================================"
 echo "  配置摘要"
 echo "================================================"
 echo "  Checkpoint:   ${ckpt_label}"
-echo "  类别:         ${category}"
+echo "  类别 (${#categories[@]}):  ${categories[@]}"
 echo "  导出后验证:   ${verify_label}"
 echo "  导出模式:     自动 (ckpt 含 PCA 参数 → 内联; 否则外部 mask)"
 echo "  输出目录:     ${work_path}/model_onnx/"
@@ -93,7 +94,7 @@ read -p "按回车开始导出，或 Ctrl+C 取消... "
 echo ""
 
 # ==================== 执行 ====================
-cmd="python src/deploy/export_onnx.py --category ${category} ${k_shot_arg} ${verify_flag}"
+cmd="python src/deploy/export_onnx.py --category \"${categories_input}\" ${k_shot_arg} ${verify_flag}"
 
 echo "执行: ${cmd}"
 echo ""
@@ -107,13 +108,16 @@ echo ""
 echo "================================================"
 if [ $? -eq 0 ]; then
     if [ -n "$k_shot_arg" ]; then
-        base="${category}_k${k_shot}_s${shot_seed}"
+        base_suffix="_k${k_shot}_s${shot_seed}"
     else
-        base="${category}"
+        base_suffix=""
     fi
     echo "  导出完成！"
     echo ""
-    echo "  产物: model_onnx/${base}_full.onnx"
+    echo "  产物:"
+    for cat in "${categories[@]}"; do
+        echo "    model_onnx/${cat}${base_suffix}_full.onnx"
+    done
 else
     echo "  导出失败！请检查错误信息。"
 fi

@@ -451,38 +451,13 @@ def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3):
 
 # ─── CLI ──────────────────────────────────────────────────────────
 
-def main():
-    #
-    # ipdb.set_trace()
+def _export_category(args, category, cfg, logger) -> bool:
+    """导出单个类别的 ONNX 模型。ckpt 缺失时返回 False 并跳过。
 
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(
-        description="Export model to ONNX"
-    )
-    parser.add_argument('--category', type=str, required=True)
-    parser.add_argument('--k_shot', type=int, default=None)
-    parser.add_argument('--shot_seed', type=int, default=0)
-    parser.add_argument('--target_size', type=int, default=None,
-                        help='默认从 config.toml 读取')
-    parser.add_argument('--verify', action='store_true')
-    parser.add_argument('--opset', type=int, default=17)
-    args = parser.parse_args()
-
-
-    # 日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
-        datefmt='%H:%M:%S',
-    )
-    logger = logging.getLogger("export_onnx")
-
-
-    # 准备路径
-    category = args.category
+    Returns:
+        True 导出成功, False 跳过 (ckpt 不存在)
+    """
     ckpt_dir = Path('model_ckpt') / category
-    onnx_dir = Path('model_onnx')
-    onnx_dir.mkdir(parents=True, exist_ok=True)
 
     if args.k_shot is not None: # 如果指定了 k_shot, 则使用少样本训练的 checkpoint
         base = f"{category}_k{args.k_shot}_s{args.shot_seed}"
@@ -492,21 +467,17 @@ def main():
         ckpt_path = ckpt_dir / f"{category}_best_ckpt.pth"
 
     if not ckpt_path.exists(): # 检查 checkpoint 是否存在
-        print(f"[ERROR] Checkpoint not found: {ckpt_path}")
-        return
+        print(f"[ERROR] Checkpoint not found: {ckpt_path}, skip '{category}'")
+        return False
 
-
-    # 加载配置
-    cfg = load_config('config.toml')
-    config = build_model_config(cfg, 'cuda' if torch.cuda.is_available() else 'cpu')
     # 类别特定 PCA 阈值/边界覆盖 (与训练 main.py 一致, 固化进内联掩码)
+    config = build_model_config(cfg, 'cuda' if torch.cuda.is_available() else 'cpu')
     from config import get_category_pca_thresholds, get_category_pca_border_thresholds
     config.pca_threshold = get_category_pca_thresholds(cfg).get(category, config.pca_threshold)
     config.pca_border = get_category_pca_border_thresholds(cfg).get(category, config.pca_border)
     target_size = args.target_size or config.target_size
-    device = config.device
 
-    onnx_path = onnx_dir / f"{base}_full.onnx"
+    onnx_path = Path('model_onnx') / f"{base}_full.onnx"
     print(f"Exporting: {ckpt_path} -> {onnx_path}")
     export_onnx(str(ckpt_path), str(onnx_path), config,
                 target_size=target_size, opset_version=args.opset)
@@ -514,6 +485,58 @@ def main():
     if args.verify:
         verify_onnx(str(ckpt_path), str(onnx_path), config,
                     target_size=target_size)
+    return True
+
+
+def main():
+    #
+    # ipdb.set_trace()
+
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(
+        description="Export model to ONNX"
+    )
+    parser.add_argument('--category', type=str, required=True,
+                        help='类别名, 空格分隔多个, 例如 --category "bottle screw"')
+    parser.add_argument('--k_shot', type=int, default=None)
+    parser.add_argument('--shot_seed', type=int, default=0)
+    parser.add_argument('--target_size', type=int, default=None,
+                        help='默认从 config.toml 读取')
+    parser.add_argument('--verify', action='store_true')
+    parser.add_argument('--opset', type=int, default=17)
+    args = parser.parse_args()
+
+    # 日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+        datefmt='%H:%M:%S',
+    )
+    logger = logging.getLogger("export_onnx")
+
+    # 准备路径 (多类别批量导出)
+    categories = args.category.strip().split()
+    Path('model_onnx').mkdir(parents=True, exist_ok=True)
+
+    # 加载配置 (PCA 阈值覆盖按类别在 _export_category 内应用)
+    cfg = load_config('config.toml')
+
+    exported, skipped = [], []
+    for i, category in enumerate(categories):
+        print(f"\n{'='*60}")
+        print(f"[{i+1}/{len(categories)}] category: {category}")
+        print('='*60)
+        ok = _export_category(args, category, cfg, logger)
+        (exported if ok else skipped).append(category)
+
+    # 汇总
+    print(f"\n{'='*60}")
+    print(f"Export summary: {len(exported)} succeeded, {len(skipped)} skipped")
+    if exported:
+        print("  succeeded:", ", ".join(exported))
+    if skipped:
+        print("  skipped (no ckpt):", ", ".join(skipped))
+    print('='*60)
 
 
 if __name__ == '__main__':
