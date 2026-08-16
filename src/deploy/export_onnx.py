@@ -353,6 +353,8 @@ def _write_deploy_metadata(onnx_path: str, deploy: dict, pca_flip=None):
         put("duad.pixel_threshold", deploy.get("pixel_threshold"))
         put("duad.pixel_f1_max", deploy.get("pixel_f1_max"))
         put("duad.calibrated_at", deploy.get("calibrated_at"))
+        put("duad.heatmap_vmin", deploy.get("heatmap_vmin"))
+        put("duad.heatmap_vmax", deploy.get("heatmap_vmax"))
         props["duad.deploy"] = json.dumps(deploy, ensure_ascii=False)
     # PCA 翻转方向标记: true/false = 固化 (新版), none = 旧版逐图判断
     if pca_flip is not None:

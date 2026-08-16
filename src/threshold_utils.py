@@ -132,3 +132,27 @@ def pixel_f1_max_threshold(amaps, masks_gt, grid_n: int = _PIXEL_GRID_N,
             best_f1, best_t = f1, float(t)
 
     return {"threshold": best_t, "f1": best_f1}
+
+
+def heatmap_scale_from_good(masks, labels_gt) -> dict:
+    """热力图固定显示尺度（客户端同口径）。
+
+    统计对象 = 仅 good (正常) 样本的 amap 像素, 不掺缺陷样本;
+    amap = 上采样 (双线性) + 高斯平滑 (k25/σ4) 后、含背景 min_fg 填充的
+    完整图 (即 model.predict() 返回的 masks 元素, 与 ONNX 端 hm_smooth 同尺度)。
+    用 P2/P99.9 而非 min/max: 正常样本尾部分布长, max 会被标签/噪声 patch
+    拉高, 使缺陷黄区变弱。
+
+    Args:
+        masks: list of [1,H,W] numpy amap (model.predict 返回)
+        labels_gt: 图像级标签 (0=正常)
+    Returns: {"vmin": float, "vmax": float}
+    """
+    good = [np.asarray(m).reshape(-1) for m, l in zip(masks, labels_gt) if int(l) == 0]
+    if not good:
+        return {"vmin": 0.0, "vmax": 1.0}
+    pixels = np.concatenate(good)
+    return {
+        "vmin": float(np.percentile(pixels, 2)),
+        "vmax": float(np.percentile(pixels, 99.9)),
+    }

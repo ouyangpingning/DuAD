@@ -4,7 +4,7 @@ from dataset import get_dataloader, get_transform
 from DuAD import DINOv2AnomalyDetector, ModelConfig
 from utils import setup_logger, set_seed, clean_GPU_Cache
 from config import load_config, build_model_config, get_category_pca_thresholds, get_category_pca_border_thresholds, get_paths
-from threshold_utils import compute_image_deploy_threshold, pixel_f1_max_threshold, evaluate
+from threshold_utils import compute_image_deploy_threshold, pixel_f1_max_threshold, evaluate, heatmap_scale_from_good
 from datetime import datetime
 import click
 
@@ -214,6 +214,9 @@ def train_category(
                                                method="youden")
     pixel_thr = pixel_f1_max_threshold(masks, masks_gt) if len(masks) else \
         {"threshold": -1.0, "f1": -1.0}
+    # 热力图固定显示尺度: good 样本 amap 像素 P2/P99.9 (与客户端同口径,
+    # 客户端优先使用 metadata 值, 不再逐图百分位归一化)
+    hm_scale = heatmap_scale_from_good(masks, labels_gt)
 
     deploy = {
         "category": atype,
@@ -222,6 +225,8 @@ def train_category(
         "image_thresholds": image_thr["thresholds"],
         "pixel_threshold": pixel_thr["threshold"],
         "pixel_f1_max": pixel_thr["f1"],
+        "heatmap_vmin": hm_scale["vmin"],
+        "heatmap_vmax": hm_scale["vmax"],
         "calibrated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -230,6 +235,8 @@ def train_category(
     logger.info(f"    backtest: {backtest}")
     logger.info(f"  Pixel F1-max threshold: {pixel_thr['threshold']:.4f} "
                 f"(F1={pixel_thr['f1']:.4f})")
+    logger.info(f"  Heatmap display scale (good amap P2/P99.9): "
+                f"vmin={deploy['heatmap_vmin']:.4f}, vmax={deploy['heatmap_vmax']:.4f}")
 
     # 把阈值写回 best checkpoint（覆盖训练循环里 save 的无阈值版本）
     model.save(best_ckpt_path, epoch=best_epoch, scores=best_score_full, deploy=deploy)
