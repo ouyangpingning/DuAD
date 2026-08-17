@@ -84,9 +84,24 @@ bash visualize_all_tmux.sh
 python src/deploy/export_onnx.py --category bottle
 python src/deploy/export_onnx.py --category bottle --verify
 
+# Batch export multiple categories
+python src/deploy/export_onnx.py --category "bottle screw" --k_shot 4 --shot_seed 0
+
 # Interactive batch export
 bash export_onnx_all_tmux.sh
 ```
+
+### Client Software: DuAD Software
+
+An industrial anomaly detection **client** built for DuAD. It loads the exported ONNX models directly and reads the deployment thresholds embedded in the model metadata (`duad.*`) — **no manual calibration required** — covering image-level judgment, pixel-level anomaly localization, and fixed heatmap display scale.
+
+**[DuAD Software](https://github.com/ouyangpingning/DuAD_software)** — `PySide6 + QML`:
+
+- **Real-time detection**: industrial camera (Daheng USB3 Vision) frames → ONNX inference → anomaly score / heatmap / pixel localization mask
+- **Camera control**: camera search/connect, resolution / exposure / gain / frame rate
+- **Light control**: CH340 serial light source controller (4 channels)
+- **MQTT alarms**: cloud broker, TLS, alarm reporting
+- **Scheduled image collection**, ROI, fullscreen display
 
 ### Aggregate Results
 

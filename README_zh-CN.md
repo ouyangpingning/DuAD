@@ -81,15 +81,30 @@ bash visualize_all_tmux.sh
 ### ONNX 导出
 
 ```bash
-# SVD 模式（默认）
+# 单类别导出 (PCA 内联模式, 输入仅图像; 旧 ckpt 自动回退外部 mask 输入)
 python src/deploy/export_onnx.py --category bottle
 
-# PCA Student 模式（端到端，推理时无需 SVD）
-python src/deploy/export_onnx.py --category bottle --pca_mode student --verify
+# 导出后自动校验 (与 PyTorch 逐元素对比)
+python src/deploy/export_onnx.py --category bottle --verify
+
+# 批量导出多个类别 (空格分隔)
+python src/deploy/export_onnx.py --category "bottle screw" --k_shot 4 --shot_seed 0
 
 # 交互式批量导出
 bash export_onnx_all_tmux.sh
 ```
+
+### 上位机软件: DuAD Software
+
+为 DuAD 算法配套的工业异常检测**上位机**,直接加载导出的 ONNX 模型,自动读取模型 metadata 中内置的部署阈值(`duad.*`):图像级阈值、像素级 F1 定位阈值、热力图固定显示尺度、PCA 方向 —— **无需人工标定**,训练完成即可部署。
+
+**[DuAD Software](https://github.com/ouyangpingning/DuAD_software)** — 技术栈 `PySide6 + QML`:
+
+- **实时异常检测**:大恒相机帧 → ONNX 推理 → 异常分数 / 热力图 / 像素定位掩模
+- **相机控制**:大恒 USB3 Vision 相机搜索/连接,分辨率/曝光/增益/帧率调节
+- **光源控制**:CH340 串口光源控制器,4 路亮度调节
+- **MQTT 报警**:云服务器连接、TLS 登录、报警上报
+- **定时图像采集**、ROI 区域、全屏显示
 
 ### 结果汇总
 
