@@ -5,8 +5,15 @@ ONNX 模型导出脚本
 将完整推理流程导出为 ONNX 格式 (SVD mask 外部输入):
     DINOv2 → 特征聚合 → Projection → Discriminator → 背景填充
 
-输出为 patch 级异常热力图 (未上采样、未高斯平滑),
-上采样与平滑由部署端推理流程处理, 与 Predictor._upsample_masks 保持一致。
+后处理 (上采样→target_size + 高斯平滑) 已内化进图, 与推理路径
+Predictor._upsample_masks 数值一致; 前处理 (Resize+CenterCrop+归一化)
+由部署端完成 (输入即归一化图, 与训练 get_transform 输出一致)。
+
+模型契约:
+    输入:  image [1, 3, target_size, target_size] float32 已归一化图像
+           (部署端自行 Resize+CenterCrop+ImageNet 归一化)
+    输出:  heatmaps    [1, 1, target_size, target_size] float 上采样+高斯平滑后的 amap
+           image_scores [1] float patch 级最大值 (与部署阈值标定尺度一致)
 
 用法:
     python src/deploy/export_onnx.py --category bottle
@@ -50,29 +57,56 @@ class _BaseONNXModel(torch.nn.Module):
         self.W = target_size // self.dino_patch_size
         self.input_planes = input_planes
 
-        # adaptive_avg_pool1d 窗口边界 (PyTorch 官方公式, 静态, 与输入无关)
-        # adaptive_avg_pool1d 非整除输出无法直接导出 ONNX, 用 cumsum+Gather 精确复现
+        # adaptive_avg_pool1d 等价复现: 常数平均矩阵 W[in_len, out_len],
+        # avg = x @ W 一次 MatMul 完成。窗口边界按 PyTorch 官方公式求得并
+        # 在导出前固化为常数 initializer; 不用 cumsum+Gather 是因为 TRT
+        # 10.3 对 CumSum/GatherElements 的实现有数值 bug (掩模全 0)。
         C = input_planes // len(layer_indices)                 # 384
         ps = embed_patch_size
         align_in = C * ps * ps                                 # 3456 = 384*3*3
         stack_in = len(layer_indices) * input_planes           # 6144 = 4*1536
-        self.register_buffer('align_start', self._adaptive_indices(align_in, input_planes)[0])
-        self.register_buffer('align_end', self._adaptive_indices(align_in, input_planes)[1])
-        self.register_buffer('stack_start', self._adaptive_indices(stack_in, input_planes)[0])
-        self.register_buffer('stack_end', self._adaptive_indices(stack_in, input_planes)[1])
+        self.register_buffer('align_W', self._adaptive_weight(align_in, input_planes))
+        self.register_buffer('stack_W', self._adaptive_weight(stack_in, input_planes))
+
+        # 后处理内化: 高斯核 (与 torchvision.transforms.GaussianBlur(kernel=25, sigma=4)
+        # 一致, 即 Predictor 中 blur; cv2.GaussianBlur((0,0), sigmaX=4) 自动核长也是 25)
+        self.register_buffer('blur_kernel', self._gaussian_kernel(25, 4.0).view(1, 1, 25, 25))
+
+    @staticmethod
+    def _gaussian_kernel(kernel_size: int, sigma: float):
+        """一维高斯核 → 二维外积, 归一化, 与 torchvision 的 get_gaussian_kernel2d 相同。"""
+        x = torch.arange(kernel_size, dtype=torch.float32) - kernel_size // 2
+        k1d = torch.exp(-(x ** 2) / (2 * sigma ** 2))
+        k1d = k1d / k1d.sum()
+        return k1d[:, None] * k1d[None, :]
 
     @staticmethod
     def _adaptive_indices(in_len: int, out_len: int):
         """adaptive_avg_pool1d 的窗口边界: start(i)=floor(i*N/L), end(i)=ceil((i+1)*N/L)。
 
         与 PyTorch ATen 的 AdaptiveAveragePooling 公式一致,
-        故 cumsum+Gather 的数值与 F.adaptive_avg_pool1d 逐元素相等。
+        故平均矩阵乘的数值与 F.adaptive_avg_pool1d 逐元素相等。
         """
         r = in_len / out_len
         idx = torch.arange(out_len, dtype=torch.float32)
         start = (idx * r).floor().long()
         end = ((idx + 1) * r).ceil().long()
         return start, end
+
+    @classmethod
+    def _adaptive_weight(cls, in_len: int, out_len: int):
+        """adaptive_avg_pool1d 的常数平均矩阵 W[in_len, out_len]。
+
+        第 i 列在 [start(i), end(i)) 窗口内为 1/窗口宽, 其余为 0;
+        x @ W 逐元素等于 F.adaptive_avg_pool1d(x, out_len),
+        且导出为单个 MatMul, CPU/CUDA/TRT 数值一致。
+        """
+        start, end = cls._adaptive_indices(in_len, out_len)
+        W = torch.zeros(in_len, out_len, dtype=torch.float32)
+        widths = (end - start).float()
+        for i in range(out_len):
+            W[start[i]:end[i], i] = 1.0 / widths[i]
+        return W
 
     def _extract_intermediate_layers(self, image):
         """DINOv2 中间层特征提取 (ONNX 可追踪)。"""
@@ -82,16 +116,13 @@ class _BaseONNXModel(torch.nn.Module):
         )
         return list(outputs)
 
-    def _adaptive_avg_pool1d(self, x, start, end):
-        """adaptive_avg_pool1d 的 ONNX 可追踪复现 (cumsum + Gather, 全程 GPU)。
+    def _adaptive_avg_pool1d(self, x, weight):
+        """adaptive_avg_pool1d 的 ONNX 可追踪复现 (常数矩阵乘, 无 CumSum/Gather)。
 
-        x: [N, 1, in_len] → [N, 1, out_len]; start/end: [out_len] 窗口边界。
-        逐元素等于 F.adaptive_avg_pool1d(x, out_len)。
+        x: [N, 1, in_len] → [N, 1, out_len]; weight: [in_len, out_len] 常数平均矩阵。
+        数值与 F.adaptive_avg_pool1d(x, out_len) 一致, 导出为单个 MatMul, TRT 稳定。
         """
-        n = x.shape[0]
-        s = torch.cumsum(F.pad(x, [1, 0]), dim=-1)
-        num = s.gather(-1, end.expand(n, 1, -1)) - s.gather(-1, start.expand(n, 1, -1))
-        return num / (end - start).float()
+        return x @ weight
 
     def _embed_legacy(self, layer_features):
         """
@@ -108,7 +139,7 @@ class _BaseONNXModel(torch.nn.Module):
 
         align_features = []
         for feat in layer_features:
-            # 用 shape 索引而非整体解包, 保证 batch 维在导出后保持动态
+            # 用 shape 索引而非整体解包 (batch 固定 1 导出, 导出期全部折叠为常量)
             B = feat.shape[0]
             C = feat.shape[1]
             ps_ = self.embed_patch_size
@@ -119,13 +150,13 @@ class _BaseONNXModel(torch.nn.Module):
             # 与 FeatureAggregator._align_dim 一致: adaptive pool, 而非 interpolate
             aligned = unfolded.reshape(-1, *unfolded.shape[2:])
             aligned = aligned.reshape(aligned.shape[0], 1, -1)
-            aligned = self._adaptive_avg_pool1d(aligned, self.align_start, self.align_end)
+            aligned = self._adaptive_avg_pool1d(aligned, self.align_W)
             align_features.append(aligned.squeeze(1))
 
         # 与 FeatureAggregator._aggregate_neighborhood 一致: 跨层 adaptive pool
         stacked = torch.stack(align_features, dim=1)
         stacked = stacked.reshape(stacked.shape[0], 1, -1)
-        pooled = self._adaptive_avg_pool1d(stacked, self.stack_start, self.stack_end)
+        pooled = self._adaptive_avg_pool1d(stacked, self.stack_W)
         return pooled.reshape(pooled.shape[0], -1)
 
     def _aggregate_fusion(self, layer_features):
@@ -136,8 +167,9 @@ class _BaseONNXModel(torch.nn.Module):
         """
         F_neighbor = self._embed_legacy(layer_features)            # [B*N, D]
         concat = torch.cat(layer_features, dim=1)                  # [B, 4C, H, W]
-        # 注意: shape 必须用索引访问 (x.shape[0]), 整体解包 (B, C, H, W) 在
-        # 导出时会被固化为常量 batch, 动态 batch 部署时 reshape 会错
+        # 注意: shape 必须用索引访问 (x.shape[0])。batch 固定 1 导出时
+        # 这些索引在导出期折叠为常量; 若以后要动态 batch, 请用 dynamo=True
+        # 导出, 而不是手写 shape 索引 (整体解包 (B, C, H, W) 会被固化成常量)
         C = concat.shape[1]
         F_channel = concat.permute(0, 2, 3, 1).reshape(-1, C)      # [B*N, D]
 
@@ -147,12 +179,24 @@ class _BaseONNXModel(torch.nn.Module):
     def _post_process(self, scores_flat, B):
         """reshape 为 patch 级热力图 + 图像级分数 (不做上采样与高斯平滑)。
 
-        上采样/平滑由部署端推理流程处理, 保证与 Predictor._upsample_masks 解耦。
+        上采样/平滑由 _upsample_blur 内化处理, 与 Predictor._upsample_masks 解耦。
         """
         H, W = self.H, self.W
         heatmaps = scores_flat.reshape(B, H, W)          # [B, H, W]
         image_scores = heatmaps.reshape(B, -1).max(dim=1).values  # [B]
         return heatmaps, image_scores
+
+    def _upsample_blur(self, heatmaps):
+        """patch 热力图 → 上采样 target_size + 高斯平滑 (等价 Predictor._upsample_masks)。
+
+        reflect padding + 常数核卷积, 导出为 Pad(reflect)+Conv, TRT 均支持。
+        """
+        x = heatmaps.unsqueeze(1).float()                # [B, 1, H, W]
+        x = F.interpolate(x, size=(self.target_size, self.target_size),
+                          mode='bilinear', align_corners=False)
+        p = self.blur_kernel.shape[-1] // 2              # 12
+        x = F.pad(x, (p, p, p, p), mode='reflect')
+        return F.conv2d(x, self.blur_kernel)             # [B, 1, target, target]
 
 
 # ─── ONNX 模型: PCA 内联 / SVD 掩码外部输入 双模式 ──────────────
@@ -162,14 +206,17 @@ class FullAnomalyDetectorONNX(_BaseONNXModel):
     完整 ONNX 模型, 两种模式:
 
     [PCA 内联模式, 推荐] ckpt 含 pca_mean/pca_component 时自动启用:
-        输入:  image  [B, 3, target_size, target_size] (已归一化)
-        输出:  heatmaps [B, H, W], image_scores [B]
+        输入:  image [1, 3, target, target] float32 已归一化图像
+        输出:  heatmaps [1, 1, target, target], image_scores [1]
         掩码在模型内部计算 (mean/1st-PC 由训练时第一个 batch 的
         聚合特征求得并固化, 部署端无需任何 SVD 计算)。
 
     [mask 外部输入模式] ckpt 无 pca 数据 (旧格式/skip 类别) 时回退:
-        输入:  image + mask [B, H*W] bool (外部计算 PCA 前景)
-        输出:  heatmaps [B, H, W], image_scores [B]
+        输入:  image [1, 3, target, target] float32 + mask [1, H*W] bool
+        输出:  heatmaps [1, 1, target, target], image_scores [1]
+
+    前处理 (Resize+CenterCrop+归一化) 由部署端完成 (输入即归一化图);
+    后处理 (上采样 + 高斯平滑) 内化在 forward 内, 与 Predictor._upsample_masks 数值一致。
     """
 
     def __init__(self, dino_encoder, projection, discriminator,
@@ -198,6 +245,7 @@ class FullAnomalyDetectorONNX(_BaseONNXModel):
     def forward(self, image, mask=None):
         B = image.shape[0]
 
+        # 输入为部署端已归一化的图像 (前处理外部完成)
         layer_features = self._extract_intermediate_layers(image)
         features = self._aggregate_fusion(layer_features)  # fusion: neighborhood + channel_concat
 
@@ -214,7 +262,8 @@ class FullAnomalyDetectorONNX(_BaseONNXModel):
         min_fg = torch.where(mask, scores, large).min()
         scores = torch.where(mask, scores, min_fg.expand_as(scores))
 
-        return self._post_process(scores, B)
+        heatmaps, image_scores = self._post_process(scores, B)   # patch 级
+        return self._upsample_blur(heatmaps), image_scores       # [B,1,target,target], [B]
 
     def _pca_mask(self, features, B):
         """内联 PCAMaskGenerator.compute_background_mask 逻辑。
@@ -328,10 +377,8 @@ def _write_deploy_metadata(onnx_path: str, deploy: dict, pca_flip=None):
     """把训练时标定的部署阈值写入 ONNX metadata_props（模型自包含）。
 
     部署端 (onnx_infer.py) 按 duad.* key 读取, 免再拿验证集标定。
-    旧 ckpt 无 deploy 字段时跳过, 本地走 *.threshold.json 兜底。
+    旧 ckpt 无 deploy 字段时跳过阈值, 仅写输入/输出契约 (本地走 *.threshold.json 兜底)。
     """
-    if not deploy and pca_flip is None:
-        return
     try:
         import onnx
         from onnx import StringStringEntryProto
@@ -356,6 +403,9 @@ def _write_deploy_metadata(onnx_path: str, deploy: dict, pca_flip=None):
         put("duad.heatmap_vmin", deploy.get("heatmap_vmin"))
         put("duad.heatmap_vmax", deploy.get("heatmap_vmax"))
         props["duad.deploy"] = json.dumps(deploy, ensure_ascii=False)
+    # 后处理已内化, 写明输入输出契约供部署端核对
+    put("duad.input", "float32 NCHW normalized image [1,3,target,target] (ImageNet mean/std; client-side Resize+CenterCrop+normalize)")
+    put("duad.output", "heatmaps=[B,1,target,target] upsampled+blurred amap; image_scores=[B] patch-max")
     # PCA 翻转方向标记: true/false = 固化 (新版), none = 旧版逐图判断
     if pca_flip is not None:
         props["duad.pca_flip"] = "true" if pca_flip else "false"
@@ -370,24 +420,91 @@ def _write_deploy_metadata(onnx_path: str, deploy: dict, pca_flip=None):
           f"pca_flip={pca_flip}")
 
 
-def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17):
-    """导出完整 ONNX 模型 (PCA 内联; 无 pca 数据时回退 mask 外部输入)。"""
+def _constantize_resize_sizes(onnx_path, target_size):
+    """把 Resize 的 sizes 输入 (Shape→Slice→Concat 动态链) 替换为常量 initializer。
+
+    torch 导出器对 F.interpolate 恒从输入 Shape 运行时构造 sizes
+    (Concat(Slice(Shape(x))[0:2], [target,target])); 输入分辨率固定后该值
+    恒等于 [1, C, target, target], 直接固化为常量并清理死节点,
+    图内不再残留动态形状运算 (TRT 构建期零 Shape 推导)。
+    """
+    import onnx
+    from onnx import numpy_helper
+
+    model = onnx.shape_inference.infer_shapes(onnx.load(onnx_path))
+    shape_of = {}
+    for vi in list(model.graph.value_info) + list(model.graph.input):
+        dims = vi.type.tensor_type.shape.dim
+        if all(d.HasField('dim_value') for d in dims):
+            shape_of[vi.name] = [d.dim_value for d in dims]
+
+    new_inits = []
+    for n in model.graph.node:
+        if n.op_type != 'Resize' or len(n.input) < 4:
+            continue
+        x_shape = shape_of.get(n.input[0])
+        if x_shape is None or len(x_shape) != 4:
+            print(f"[WARN] skip constantizing Resize, unknown input shape: {n.name}")
+            continue
+        sizes = np.array([1, x_shape[1], target_size, target_size], dtype=np.int64)
+        init = numpy_helper.from_array(sizes, name=f"{n.input[3]}_const")
+        new_inits.append(init)
+        n.input[3] = init.name
+    if not new_inits:
+        print("[WARN] no Resize node found, skip constantizing sizes")
+        return
+
+    # 清理死节点: 输出无人引用且非图输出的节点 (迭代至不动点)
+    used = {o.name for o in model.graph.output}
+    for n in model.graph.node:
+        used.update(n.input)
+    keep = [n for n in model.graph.node
+            if any(o in used for o in n.output)]
+    del model.graph.node[:]
+    model.graph.node.extend(keep)
+    model.graph.initializer.extend(new_inits)
+    # sizes 替换后重跑 shape 推断, 让输出形状尽量以静态值自描述
+    model = onnx.shape_inference.infer_shapes(model)
+    # Resize 上游含 onnx 无法值求值的形状链 (Shape→Concat→Reshape),
+    # 推断不出静态输出形状; 输出尺寸即常量化的 sizes, 显式写死
+    for o in model.graph.output:
+        if o.name == 'heatmaps':
+            dims = o.type.tensor_type.shape.dim
+            del dims[:]
+            for v in (1, 1, target_size, target_size):
+                d = dims.add()
+                d.dim_value = v
+    onnx.checker.check_model(model)
+    onnx.save(model, onnx_path)
+    print(f"[INFO] Constantized {len(new_inits)} Resize sizes to [1, C, {target_size}, {target_size}]")
+
+
+def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17,
+                detector=None, model=None):
+    """导出完整 ONNX 模型 (PCA 内联; 无 pca 数据时回退 mask 外部输入)。
+
+    输入为部署端已归一化的图像 [1, 3, target, target] float32
+    (前处理 Resize+CenterCrop+归一化在客户端完成);
+    后处理 (上采样 + 高斯平滑) 内化在图内。
+    detector/model: 复用外部已构建的实例 (verify 需与导出共用同一模型,
+    否则旧 ckpt 无 agg_state 时 gate_mlp 随机初始化, 两边不一致)。
+    """
     device = config.device
-    detector, model = _build_detector_and_onnx_model(ckpt_path, config, target_size)
+    if detector is None or model is None:
+        detector, model = _build_detector_and_onnx_model(ckpt_path, config, target_size)
     model.to(device).eval()
 
     # 聚合一致性检查: ONNX 内联 _aggregate_fusion vs 真实 FeatureAggregator
     _check_aggregator_consistency(detector, model, target_size)
 
     B, H = 1, target_size // 14
+    # 已归一化 dummy 图像 (前处理由部署端完成, 图内只做后处理)
     dummy_image = torch.randn(B, 3, target_size, target_size, device=device)
 
     Path(onnx_path).parent.mkdir(parents=True, exist_ok=True)
-    dynamic_axes = {
-        'image': {0: 'batch'},
-        'heatmaps': {0: 'batch'},
-        'image_scores': {0: 'batch'},
-    }
+    # batch 固定 1 (部署端单图推理): 不声明任何 dynamic_axes, 全部形状在
+    # 导出期折叠为常量 —— 不会生成 TRT 不友好的 If (squeeze 动态维)。
+    # 如需动态 batch/分辨率, 用 dynamo=True 导出 (注意其限制)。
     if model.pca_inline:
         # PCA 内联模式: 输入仅 image, mask 在模型内部计算
         torch.onnx.export(
@@ -395,22 +512,22 @@ def export_onnx(ckpt_path, onnx_path, config, target_size=518, opset_version=17)
             input_names=['image'],
             output_names=['heatmaps', 'image_scores'],
             opset_version=opset_version,
-            dynamic_axes=dynamic_axes,
         )
         print(f"[INFO] PCA inline mode: mean/1st-PC embedded from checkpoint; "
               f"flip direction = {model.pca_flip}")
     else:
         # 回退: mask 外部输入 (旧 ckpt 无 pca 数据)
-        dynamic_axes['mask'] = {0: 'batch'}
         dummy_mask = torch.ones(B, H * H, dtype=torch.bool, device=device)
         torch.onnx.export(
             model, (dummy_image, dummy_mask), onnx_path,
             input_names=['image', 'mask'],
             output_names=['heatmaps', 'image_scores'],
             opset_version=opset_version,
-            dynamic_axes=dynamic_axes,
         )
         print("[WARN] No PCA params in checkpoint; falling back to external mask input")
+
+    # Resize sizes 常量化 (消除 Shape→Slice→Concat 动态链) 后再写 metadata
+    _constantize_resize_sizes(onnx_path, target_size)
 
     # 训练时标定的部署阈值随模型写入 metadata（旧 ckpt 无 deploy 字段则跳过）
     _write_deploy_metadata(onnx_path, getattr(detector, "_deploy", None),
@@ -429,8 +546,57 @@ def _ort_available():
         return False
 
 
-def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3):
-    """验证 ONNX 模型 (支持 PCA 内联 / mask 外部输入两种模式)。"""
+def _natural_verify_image(category, data_dirs, target_size):
+    """从数据集取一张真实 good 测试图 (Resize 到 target_size, 返回 uint8 CHW)。
+
+    真实图像的 PCA mask 必有前景, 分数不会进入 1e10 哨兵区 (随机噪声图会),
+    否则绝对误差比较会被大数舍入淹没而假 FAIL。
+    数据集不可用 (路径缺失/无 good 图) 时返回 None。
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    for base in data_dirs:
+        # MVTec: {base}/{cat}/test/good/*.png; VisA: {base}/{cat}/Data/Images/Normal/*.JPG
+        candidates = [
+            Path(base) / category / 'test' / 'good',
+            Path(base) / category / 'Data' / 'Images' / 'Normal',
+        ]
+        for good_dir in candidates:
+            if not good_dir.is_dir():
+                continue
+            imgs = sorted(good_dir.glob('*.png')) + sorted(good_dir.glob('*.JPG')) \
+                + sorted(good_dir.glob('*.jpg'))
+            if not imgs:
+                continue
+            pil = Image.open(imgs[0]).convert('RGB')
+            pil = pil.resize((target_size, target_size), Image.BILINEAR)
+            return np.asarray(pil).transpose(2, 0, 1)  # [3, H, W] uint8
+    return None
+
+
+def _client_preprocess(images_uint8, target_size, device):
+    """部署端前处理复现: /255 + ImageNet 归一化 (Resize 已在取图时完成)。
+
+    与训练 get_transform 数值一致; 返回 [1, 3, target, target] float32。
+    """
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    x = images_uint8.to(device).float() / 255.0
+    return (x - mean.to(device)) / std.to(device)
+
+
+def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3,
+                category=None, data_dirs=(), detector=None, model=None):
+    """验证 ONNX 模型 (支持 PCA 内联 / mask 外部输入两种模式)。
+
+    输入为已归一化图像 (前处理在验证脚本侧复现, 与部署端一致);
+    覆盖图内后处理 (上采样+高斯平滑) 路径。PT 侧关闭 TF32, 保证与
+    ORT fp32 逐位可比。
+    detector/model 必须与导出时共用同一实例 (旧 ckpt 无 agg_state 时
+    gate_mlp 随机初始化, 重新构建会得到不同权重导致假 FAIL)。
+    """
     if not _ort_available():
         return
     import onnxruntime as ort
@@ -439,11 +605,20 @@ def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3):
     H = target_size // 14
     N = H * H
 
-    detector, pt_model = _build_detector_and_onnx_model(
-        ckpt_path, config, target_size)
-    pt_model.to(device).eval()
+    if detector is None or model is None:
+        detector, model = _build_detector_and_onnx_model(
+            ckpt_path, config, target_size)
+    pt_model = model.to(device).eval()
 
-    images = torch.randn(1, 3, target_size, target_size, device=device)
+    # uint8 图像: 优先真实 good 图 (分数不进哨兵区), 否则平滑随机回退
+    nat = _natural_verify_image(category, data_dirs, target_size)
+    if nat is None:
+        print("[WARN] no dataset image for verification, using smoothed random image")
+        rnd = np.random.RandomState(0).rand(3, target_size, target_size).astype(np.float32)
+        rnd = torch.from_numpy(rnd).unsqueeze(0)
+        rnd = F.avg_pool2d(rnd, kernel_size=8, stride=1, padding=4)  # 平滑: 更接近真实图像
+        nat = (rnd * 255).round().to(torch.uint8).squeeze(0).cpu().numpy()
+    images = _client_preprocess(torch.from_numpy(nat).unsqueeze(0), target_size, device)
 
     session = ort.InferenceSession(
         onnx_path,
@@ -451,17 +626,21 @@ def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3):
                    if p in ort.get_available_providers()],
     )
 
+    # PT 侧关闭 TF32: 1e10 哨兵值在 TF32 下会有 ~1e6 绝对误差, 与 ORT fp32 不可比
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
     with torch.no_grad():
         if pt_model.pca_inline:
             pt_heatmaps, pt_scores = pt_model(images)
             ort_hm, ort_sc = session.run(None, {
-                'image': images.cpu().numpy().astype(np.float32),
+                'image': images.cpu().numpy(),
             })
         else:
             mask = torch.ones(1, N, dtype=torch.bool, device=device)
             pt_heatmaps, pt_scores = pt_model(images, mask)
             ort_hm, ort_sc = session.run(None, {
-                'image': images.cpu().numpy().astype(np.float32),
+                'image': images.cpu().numpy(),
                 'mask': mask.cpu().numpy(),
             })
 
@@ -469,12 +648,17 @@ def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3):
     sc_diff = np.abs(pt_scores.cpu().numpy() - ort_sc).max()
 
     mode = "PCA inline" if pt_model.pca_inline else "external mask"
-    print(f"\n  Verification ({mode}, target={target_size}, N_per={N}):")
-    print(f"    heatmaps shape:  {ort_hm.shape} (patch 级, 未上采样)")
+    print(f"\n  Verification ({mode}, target={target_size}, input=normalized {target_size}x{target_size}):")
+    print(f"    heatmaps shape:  {ort_hm.shape} (上采样+高斯平滑后)")
     print(f"    heatmaps max diff:     {hm_diff:.2e}")
     print(f"    image_scores max diff: {sc_diff:.2e}")
-    print(f"  {'[PASS]' if max(hm_diff, sc_diff) < atol else '[FAIL]'} "
-          f"ONNX matches PyTorch within {atol:.0e}")
+    # 哨兵值场景 (随机回退图 mask 全 False → 分数 ~1e10) 下绝对比较无意义,
+    # 退化为相对比较; 真实图 (正常分数量级) 仍是严格绝对比较
+    scale = max(1.0, float(np.abs(ort_hm).max()),
+                float(pt_heatmaps.cpu().numpy().max()))
+    ok = max(hm_diff, sc_diff) < atol * scale
+    print(f"  {'[PASS]' if ok else '[FAIL]'} "
+          f"ONNX matches PyTorch within {atol:.0e} (scale={scale:.1e})")
 
 
 # ─── CLI ──────────────────────────────────────────────────────────
@@ -507,12 +691,20 @@ def _export_category(args, category, cfg, logger) -> bool:
 
     onnx_path = Path('model_onnx') / f"{base}_full.onnx"
     print(f"Exporting: {ckpt_path} -> {onnx_path}")
+    # 构建一次, 导出与验证共用同一实例 (gate_mlp/参数一致性)
+    detector, model = _build_detector_and_onnx_model(
+        str(ckpt_path), config, target_size)
     export_onnx(str(ckpt_path), str(onnx_path), config,
-                target_size=target_size, opset_version=args.opset)
+                target_size=target_size, opset_version=args.opset,
+                detector=detector, model=model)
 
     if args.verify:
+        data_dirs = [cfg['paths']['mvtec_base_dir'],
+                     cfg['paths'].get('visa_base_dir', '')]
         verify_onnx(str(ckpt_path), str(onnx_path), config,
-                    target_size=target_size)
+                    target_size=target_size,
+                    category=category, data_dirs=data_dirs,
+                    detector=detector, model=model)
     return True
 
 
