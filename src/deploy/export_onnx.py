@@ -35,9 +35,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from DuAD import DINOv2AnomalyDetector, ModelConfig
+from DuAD import DINOv2AnomalyDetector
 from config import load_config, build_model_config
-from dataset import get_dataloader, get_transform
 
 
 # ─── ONNX 模型基类 (共享 DINOv2 特征提取 + 聚合) ─────────────────
@@ -134,8 +133,6 @@ class _BaseONNXModel(torch.nn.Module):
         """
         ps = self.embed_patch_size
         pad = (ps - 1) // 2
-        target_dim = self.input_planes
-        output_size = self.input_planes
 
         align_features = []
         for feat in layer_features:
@@ -663,7 +660,7 @@ def verify_onnx(ckpt_path, onnx_path, config, target_size=518, atol=1e-3,
 
 # ─── CLI ──────────────────────────────────────────────────────────
 
-def _export_category(args, category, cfg, logger) -> bool:
+def _export_category(args, category, cfg) -> bool:
     """导出单个类别的 ONNX 模型。ckpt 缺失时返回 False 并跳过。
 
     Returns:
@@ -709,9 +706,6 @@ def _export_category(args, category, cfg, logger) -> bool:
 
 
 def main():
-    #
-    # ipdb.set_trace()
-
     # 解析命令行参数
     parser = argparse.ArgumentParser(
         description="Export model to ONNX"
@@ -726,13 +720,12 @@ def main():
     parser.add_argument('--opset', type=int, default=17)
     args = parser.parse_args()
 
-    # 日志
+    # 日志 (格式化 detector 内部的 logging 输出; 本脚本自身用 print)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
         datefmt='%H:%M:%S',
     )
-    logger = logging.getLogger("export_onnx")
 
     # 准备路径 (多类别批量导出)
     categories = args.category.strip().split()
@@ -746,7 +739,7 @@ def main():
         print(f"\n{'='*60}")
         print(f"[{i+1}/{len(categories)}] category: {category}")
         print('='*60)
-        ok = _export_category(args, category, cfg, logger)
+        ok = _export_category(args, category, cfg)
         (exported if ok else skipped).append(category)
 
     # 汇总
