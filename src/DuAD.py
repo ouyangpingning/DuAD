@@ -63,6 +63,10 @@ class ModelConfig:
     # 特征聚合方式
     aggregation_type: str = "neighborhood"  # "neighborhood" (当前, _embed_legacy) 或 "channel_concat" (消融 B4, _embed_channel_concat)
 
+    # 门控融合模式开关（默认值与论文设置一致）
+    gate_mode: str = "frozen"           # "frozen" (默认, 门控 MLP 初始化后固定) / "learnable" / "avg"
+    gate_seed: Optional[int] = None     # 门控 MLP 的初始化种子 (None = 原始全局 RNG 行为)
+
     # Scheduler 配置
     use_scheduler: bool = True          # 是否使用学习率调度器
     scheduler_type: str = "cosine"      # 调度器类型: "cosine" (CosineAnnealingLR) 或 "multistep" (MultiStepLR)
@@ -108,16 +112,26 @@ class FeatureAggregator(torch.nn.Module):
     """
 
     _METHODS = {"neighborhood", "channel_concat", "fusion"}
+    # 门控模式（默认 "frozen" 与论文设置一致）
+    #   "frozen"    — 门控 MLP 初始化后固定（论文默认）
+    #   "learnable" — 门控 MLP 参数进优化器，随训练更新
+    #   "avg"       — 无门控 MLP，等价固定 0.5 平均融合（纯平均基线）
+    _GATE_MODES = {"frozen", "learnable", "avg"}
 
     def __init__(self, input_dim=384, num_layers=4,
                  method="neighborhood",
                  patch_size=3, stride=1,
-                 fusion_hidden_dim=None):
+                 fusion_hidden_dim=None,
+                 gate_mode="frozen", gate_seed=None):
         super().__init__()
         if method not in self._METHODS:
             raise ValueError(
                 f"Unknown aggregation method: '{method}'. "
                 f"Available: {sorted(self._METHODS)}"
+            )
+        if gate_mode not in self._GATE_MODES:
+            raise ValueError(
+                f"Unknown gate_mode: '{gate_mode}'. Available: {sorted(self._GATE_MODES)}"
             )
         self.input_dim = input_dim
         self.num_layers = num_layers
@@ -125,6 +139,8 @@ class FeatureAggregator(torch.nn.Module):
         self.method = method
         self.patch_size = patch_size
         self.stride = stride
+        self.gate_mode = gate_mode
+        self.gate_seed = gate_seed
 
         # 预创建 Unfold 算子，避免每次 forward 重复分配
         padding = (patch_size - 1) // 2
@@ -134,14 +150,33 @@ class FeatureAggregator(torch.nn.Module):
         )
 
         # 门控融合 MLP: 学习每个 patch 在每个通道上信任哪个分支
-        if method == "fusion":
+        # 注意: gate_mode="avg" 时**不建**这个 MLP（纯 0.5 平均）；
+        #       gate_seed 只影响门控 MLP 的初始化，且用完立刻恢复全局 RNG，
+        #       不影响 DINOv2 / projector / discriminator 的初始化（多种子敏感性实验要的就是这个）。
+        if method == "fusion" and gate_mode != "avg":
             hidden = fusion_hidden_dim or max(self.output_dim // 4, 64)
-            self.gate_mlp = torch.nn.Sequential(
-                torch.nn.Linear(self.output_dim * 2, hidden),
-                torch.nn.ReLU(),
-                torch.nn.Linear(hidden, self.output_dim),
-                torch.nn.Sigmoid(),
-            )
+            if gate_seed is None:
+                self.gate_mlp = torch.nn.Sequential(
+                    torch.nn.Linear(self.output_dim * 2, hidden),
+                    torch.nn.ReLU(),
+                    torch.nn.Linear(hidden, self.output_dim),
+                    torch.nn.Sigmoid(),
+                )
+            else:
+                cpu_state = torch.get_rng_state()
+                cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+                try:
+                    torch.manual_seed(int(gate_seed))
+                    self.gate_mlp = torch.nn.Sequential(
+                        torch.nn.Linear(self.output_dim * 2, hidden),
+                        torch.nn.ReLU(),
+                        torch.nn.Linear(hidden, self.output_dim),
+                        torch.nn.Sigmoid(),
+                    )
+                finally:
+                    torch.set_rng_state(cpu_state)
+                    if cuda_state is not None:
+                        torch.cuda.set_rng_state_all(cuda_state)
 
     def forward(self, layer_features):
         """聚合多层特征 → patch 向量。
@@ -210,6 +245,10 @@ class FeatureAggregator(torch.nn.Module):
         """
         F_neighbor = self._aggregate_neighborhood(layer_features)    # [B*N, D]
         F_channel = self._aggregate_channel_concat(layer_features)   # [B*N, D]
+
+        # 无门控、固定 0.5 平均（纯平均基线）
+        if self.gate_mode == "avg":
+            return 0.5 * F_neighbor + 0.5 * F_channel
 
         # 拼接两个视图作为门控输入
         gate_input = torch.cat([F_neighbor, F_channel], dim=-1)      # [B*N, 2D]
@@ -314,6 +353,8 @@ class PCAMaskGenerator:
         kernel_size: int = 3,
         use_gpu: bool = True,                 # 是否使用GPU加速
         skip_categories: List[str] = None,    # 指定跳过的类别列表（返回全1掩模）
+        flip_margin: float = 0.05,            # 中心占比落在阈值 ±margin 内视为"边界"，需池化再判
+        flip_pool_images: int = 8,            # 边界情况下累积多少张图后定方向（= 一个 batch）
     ):
         self.threshold = threshold
         self.border_ratio = border_ratio
@@ -329,6 +370,14 @@ class PCAMaskGenerator:
         # 之后所有 batch/图像固定复用, 不再逐图判断 (避免阈值贴近翻转线时
         # 训练批次间/推理图间掩模方向来回抖动)
         self._pca_flip = None
+        # 方向判定的"边界"处理：中心前景占比恰好贴住 0.35 时，单张图判断等于抛硬币
+        # （2026-10-15 实测 VisA chewinggum：4 张 support 图分别 0.233/0.271/0.295/0.362，
+        #  若恰好抽到 0.362 那张 → flip=False → P-AUC 0.34）。
+        # 这里只在"贴边"时累积一个 batch 的中心占比再定方向；不贴边时与原实现完全一致。
+        self.flip_margin = flip_margin
+        self.flip_pool_images = flip_pool_images
+        self._flip_pending = []          # 边界情况下累积的逐图中心前景占比
+        self._flip_pooled = None         # 定下来时用的池化占比（便于排查/日志）
     def set_category(self, category: str):
         """
         设置当前处理的类别
@@ -342,6 +391,8 @@ class PCAMaskGenerator:
             self._pca_component = None
             self._pca_category = None
             self._pca_flip = None
+            self._flip_pending = []
+            self._flip_pooled = None
         self.current_category = category
 
     def __call__(
@@ -427,9 +478,18 @@ class PCAMaskGenerator:
 
         # 如果中心区域前景太少，反转掩模
         # 方向只在该类别第一次计算时确定一次 (与 SVD 缓存同一 batch),
-        # 之后固定复用, 避免逐图判断导致掩模方向抖动
+        # 之后固定复用, 避免逐图判断导致掩模方向抖动。
+        # 与原实现的唯一区别：当中心占比贴住 0.35（±flip_margin）时，单张图不足以下结论，
+        # 先累积一个 batch 的占比再定；不贴边时与原实现逐位一致。
         if self._pca_flip is None:
-            self._pca_flip = center_mask.sum().item() <= center_mask.numel() * 0.35
+            ratio = center_mask.sum().item() / max(center_mask.numel(), 1)
+            if abs(ratio - 0.35) > self.flip_margin:
+                self._pca_flip = ratio <= 0.35
+            else:
+                self._flip_pending.append(ratio)
+                if len(self._flip_pending) >= self.flip_pool_images:
+                    self._flip_pooled = float(np.mean(self._flip_pending))
+                    self._pca_flip = self._flip_pooled <= 0.35
         if self._pca_flip:
             mask = (-first_pc) > self.threshold
             mask_2d = mask.reshape(H, W)
@@ -738,7 +798,26 @@ class Trainer:
             lr=config.dsc_lr,
             weight_decay=1e-5
         )
-        
+
+        # 门控 MLP 优化器 —— 仅 gate_mode="learnable" 时创建。
+        # 默认 gate_mode="frozen" 时这里恒为 None，投稿稿的行为（门控不进优化器）完全不变。
+        self.optimizer_gate = None
+        if getattr(config, 'gate_mode', 'frozen') == 'learnable':
+            gate_params = [p for p in feature_extractor.aggregator.parameters()
+                           if p.requires_grad]
+            if gate_params:
+                self.optimizer_gate = torch.optim.AdamW(
+                    gate_params,
+                    lr=getattr(config, 'gate_lr', config.proj_lr),
+                    weight_decay=1e-5,
+                )
+                n_gate = sum(p.numel() for p in gate_params)
+                self.logger.info(
+                    f"[GATE] Learnable gated fusion enabled: "
+                    f"{n_gate} gate parameters added to the optimizer "
+                    f"(lr={getattr(config, 'gate_lr', config.proj_lr)})"
+                )
+
         # 学习率调度器
         total_steps = config.gan_epochs * config.meta_epochs
         if config.use_scheduler:
@@ -1027,6 +1106,9 @@ class Trainer:
                 loss.backward()
                 self.optimizer_proj.step()
                 self.optimizer_dsc.step()
+                if self.optimizer_gate is not None:      # 可学习门控臂
+                    self.optimizer_gate.step()
+                    self.optimizer_gate.zero_grad()
                 # -------------------
                 # 计算指标
                 with torch.no_grad():
@@ -1065,6 +1147,9 @@ class Trainer:
                 loss.backward()
                 self.optimizer_proj.step()
                 self.optimizer_dsc.step()
+                if self.optimizer_gate is not None:      # 可学习门控臂
+                    self.optimizer_gate.step()
+                    self.optimizer_gate.zero_grad()
 
                 with torch.no_grad():
                     p_true = (true_scores >= 1.0).float().mean().item()
@@ -1096,6 +1181,9 @@ class Trainer:
             loss.backward()
             self.optimizer_proj.step()
             self.optimizer_dsc.step()
+            if self.optimizer_gate is not None:          # 可学习门控臂
+                self.optimizer_gate.step()
+                self.optimizer_gate.zero_grad()
 
             with torch.no_grad():
                 p_true = (true_scores >= 1.0).float().mean().item()
@@ -1262,6 +1350,8 @@ class DINOv2AnomalyDetector:
             num_layers=len(self.config.layer_indices),
             method=agg_type,
             patch_size=self.config.patch_size,
+            gate_mode=getattr(self.config, 'gate_mode', 'frozen'),
+            gate_seed=getattr(self.config, 'gate_seed', None),
         )
         self.feature_extractor = FeatureExtractor(
             model_path=model_path,
@@ -1354,7 +1444,20 @@ class DINOv2AnomalyDetector:
             )
             if self.current_category is not None and self.predictor.pca_generator:
                 self.predictor.pca_generator.set_category(self.current_category)
-                self._restore_pca(self.predictor.pca_generator)
+                # 让"训练期评估"用的掩模与 trainer（= 将要保存进 ckpt、部署时真正使用的）完全一致。
+                # 否则 predictor 会自己从第一张**测试**图重算 SVD 与方向：逐 epoch 的指标（以及
+                # best-epoch 的选择）就与最终模型不是同一套掩模。实测后果：VisA chewinggum 的
+                # k4_s0 训练期 P-AUC 一直显示 0.85 左右，而最终模型只有 0.33（方向反了），
+                # 直到训练结束才暴露。
+                src = self.trainer.pca_generator if self.trainer is not None else None
+                if src is not None and src._pca_component is not None:
+                    dst = self.predictor.pca_generator
+                    dst._pca_mean = src._pca_mean
+                    dst._pca_component = src._pca_component
+                    dst._pca_flip = src._pca_flip
+                    dst._pca_category = self.current_category
+                else:
+                    self._restore_pca(self.predictor.pca_generator)
 
         return self.predictor.predict(test_dataloader, aggregation)
     

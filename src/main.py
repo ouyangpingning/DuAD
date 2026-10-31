@@ -323,7 +323,39 @@ def train_category(
     default=None,
     help='特征聚合方式 (消融实验): neighborhood (默认, 邻域聚合) 或 channel_concat (通道拼接)'
 )
-def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment, aggregation):
+# ===== 消融实验 CLI flags（默认全部 = 论文设置）=====
+@click.option(
+    '--gate_mode',
+    type=click.Choice(['frozen', 'learnable', 'avg']),
+    default=None,
+    help='门控融合模式: frozen (默认, 论文设置) / learnable (门控进优化器) / avg (固定 0.5 平均)'
+)
+@click.option(
+    '--gate_seed',
+    type=int,
+    default=None,
+    help='门控 MLP 的初始化种子（只影响 gate_mlp，不影响其它模块初始化）'
+)
+@click.option(
+    '--perlin_weight',
+    type=float,
+    default=None,
+    help='Perlin 分支损失权重 alpha（默认取 config.toml = 0.5）'
+)
+@click.option(
+    '--pca_weight',
+    type=float,
+    default=None,
+    help='PCA 全局分支损失权重 beta（默认取 config.toml = 0.5）'
+)
+@click.option(
+    '--tag',
+    type=str,
+    default=None,
+    help='附加到 checkpoint/log 名字上的标签，例如 r33learn / r34a025（避免覆盖已有 ckpt）'
+)
+def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no_augment,
+         aggregation, gate_mode, gate_seed, perlin_weight, pca_weight, tag):
     """主函数"""
     # 将 click 返回的字符串按空格分割为列表
     categories = categories.strip().split()
@@ -388,6 +420,22 @@ def main(categories, k_shot, shot_seed, dataset, no_pca_mask, no_perlin_mask, no
         config.aggregation_type = aggregation
         config.ablation_tag += f"_agg-{aggregation}" if config.ablation_tag else f"_agg-{aggregation}"
         print(f"[ABLATION] Aggregation type: {aggregation}")
+    # ===== 消融实验参数 override =====
+    if gate_mode is not None:
+        config.gate_mode = gate_mode
+        print(f"[GATE] gate_mode = {gate_mode}")
+    if gate_seed is not None:
+        config.gate_seed = gate_seed
+        print(f"[GATE] gate_seed = {gate_seed}")
+    if perlin_weight is not None:
+        config.perlin_branch_weight = perlin_weight
+        print(f"[LOSS] alpha (perlin_branch_weight) = {perlin_weight}")
+    if pca_weight is not None:
+        config.pca_branch_weight = pca_weight
+        print(f"[LOSS] beta  (pca_branch_weight)    = {pca_weight}")
+    if tag:
+        config.ablation_tag += f"_{tag}" if config.ablation_tag else f"_{tag}"
+        print(f"[TAG] Checkpoint tag: {config.ablation_tag}")
     if ablation_tags or aggregation is not None:
         print(f"[ABLATION] Checkpoint tag: {config.ablation_tag}")
     # ================================
